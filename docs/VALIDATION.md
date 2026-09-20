@@ -71,7 +71,8 @@ verifizieren den Harness, **nicht** die Sicherheit oder Funktion deiner Anwendun
 ## Lokale Erstabnahme
 
 1. `./ci init`, Pfade und Projektadapter integrieren; für ein App-Repository
-   `./ci setup --repo PATH` und danach `./ci prompt --repo PATH` ausführen.
+   `./ci setup --repo PATH` ausführen. `./ci prompt --repo PATH` ist optional,
+   wenn ein repository-lokaler Agenten-Prompt gewünscht ist.
 2. `./ci doctor` ausführen.
 3. `./ci lock-images`, Digests/Architektur prüfen, `./ci up`,
    `./ci bootstrap --repo PATH`; bei einer frischen Instanz rotiert der Bootstrap

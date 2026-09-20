@@ -26,7 +26,7 @@ from core import (HarnessError, InfrastructureError, Runner, Snapshot, capture,
                   tree_hash, validate_semgrep, validate_trivy, verify_unchanged, write_json)
 from project import (STAGES, branch_context, configured_command, detect_project, evidence_path,
                      file_sha256, load_profile, profile_from_detection, profile_issues,
-                     profile_path, project_slug, prompt_path, repository_root, validate_profile,
+                     profile_path, project_slug, repository_root, validate_profile,
                      write_agent_prompt, write_profile)
 from sonar import export_analysis, print_ui_credentials, provision, wait_ready
 from tui import format_detection, run_setup_tui
@@ -1166,9 +1166,7 @@ def setup_project(repo_arg: str, force: bool, noninteractive: bool,
     profile["project"]["subdir"] = subdir
     validate_profile(profile, repo)
     profile_path_written = write_profile(repo, profile, overwrite=force)
-    prompt = write_agent_prompt(repo, profile, ROOT / "ci", ROOT / "reports")
     print(f"Wrote project profile: {profile_path_written}")
-    print(f"Wrote agent prompt: {prompt}")
     for note in profile.get("notes", []):
         print(f"REVIEW: {note}")
     for issue in profile_issues(profile):
@@ -1245,7 +1243,7 @@ def main() -> int:
     setup.add_argument("--adapter", choices=("generic", "next-npm", "next-fullstack", "spring-maven", "custom"))
     setup.add_argument("--stages", help="Comma-separated stage names for non-interactive setup")
     setup.add_argument("--subdir", default=".", help="Application subdirectory inside the Git repository (for monorepos)")
-    prompt = sub.add_parser("prompt", help="Regenerate and print the project agent prompt")
+    prompt = sub.add_parser("prompt", help="Generate an optional project agent prompt")
     prompt.add_argument("--repo", default=".", help="Git repository path")
     gate = sub.add_parser("gate", help="Run the selected project profile as a merge gate")
     gate.add_argument("--repo", default=".", help="Git repository path")

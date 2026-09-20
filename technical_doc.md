@@ -37,13 +37,15 @@ versionierbares `.ci/harness.json` mit Schema 2. Das Profil wählt nur Adapter, 
 Argument-Arrays, relative Evidence-Pfade und explizite Testwerte. Es kann weder
 Images, zentrale Policies, Scannerregeln, Gates noch Host-Mounts ersetzen.
 
-`./ci setup --repo PATH` erkennt den Git-Root und erzeugt das Profil. Mit
+`./ci setup --repo PATH` erkennt den Git-Root und erzeugt nur das Profil. Mit
 `--subdir apps/web` kann ein Anwendungsteil eines Monorepos versioniert werden. Die interaktive
 TUI besteht ausschließlich aus Python-Standardbibliothek und `curses`; die
 profilunabhängige Logik ist ohne Terminal testbar. Die Erkennung schlägt `next-fullstack`
 für Next/npm, `spring-maven` für ein Spring-Boot-POM und sonst `custom` bzw. `generic`
 vor. `pnpm`, Yarn, Gradle und Maven-Reactoren werden nicht still als kompatibel
-behandelt. Fehlende Commands/Evidence führen im Gate zu BLOCKED.
+behandelt. Fehlende Commands/Evidence führen im Gate zu BLOCKED. Ein Agenten-Prompt ist
+optional und wird nur auf ausdrücklichen Aufruf von `./ci prompt --repo PATH`
+erzeugt.
 
 Ein Sonar-Projektprofil wird unabhängig von der Legacy-Konfiguration provisioniert:
 

@@ -11,8 +11,10 @@ as the merge-intent check:
   when the task is explicitly ready for a merge to the configured target branch.
 - After a local merge, run `../local-ci-harness/ci gate --repo . --intent push-main`
   before asking the user to push.
-- Read `.ci/agent-prompt.md` and the namespaced
+- Read `.ci/harness.json` and the namespaced
   `../local-ci-harness/reports/<project-slug>/latest/summary.json` from that run.
+  If `.ci/agent-prompt.md` exists, it is optional supplementary guidance, not a
+  prerequisite.
 - The harness never commits, merges or pushes. Do not treat a stale `latest` report,
   a different source hash, RUNNING, BLOCKED or ERROR as a pass.
 

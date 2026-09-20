@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 
 from core import HarnessError, Result, git, read_json, write_json
-from main import _gate_exit_code, _gate_status, gate_project
+from main import _gate_exit_code, _gate_status, gate_project, setup_project
 from project import (
     Detection,
     branch_context,
@@ -144,6 +144,12 @@ class ProjectProfileTests(unittest.TestCase):
         self.assertEqual(load_profile(self.repo)[0]["schema_version"], 2)
         self.assertIn("merge-to-main", prompt_file.read_text())
         self.assertIn("app/latest/summary.json", prompt_file.read_text())
+
+    def test_setup_writes_profile_without_agent_prompt(self):
+        result = setup_project(str(self.repo), False, True, "generic", "secrets")
+        self.assertEqual(result, 0)
+        self.assertTrue((self.repo / ".ci" / "harness.json").exists())
+        self.assertFalse((self.repo / ".ci" / "agent-prompt.md").exists())
 
     def test_branch_context_enforces_gate_intent(self):
         (self.repo / "README.md").write_text("initial")

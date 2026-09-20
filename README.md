@@ -19,28 +19,41 @@ then runs the stages selected in `.ci/harness.json`, validates machine-readable
 evidence, and writes a namespaced report. It never merges, pushes or writes to `main`.
 
 ```mermaid
-flowchart LR
-    A["Explicit intent<br/>merge-to-main or push-main"] --> B["Snapshot Git tree<br/>branch, HEAD, merge-base, source hash"]
-    B --> C["Install / resolve dependencies<br/>only when the profile needs it"]
-    C --> D["Secrets<br/>Gitleaks"]
-    D --> E["Static analysis<br/>Semgrep"]
-    E --> F["Dependencies & IaC<br/>Trivy / CycloneDX"]
-    F --> G["Lint + typecheck<br/>project commands"]
-    G --> H["Unit tests<br/>JUnit evidence"]
-    H --> I["Integration tests<br/>explicit command + evidence"]
-    I --> J["Build<br/>production/build command"]
-    J --> K["Coverage<br/>thresholds + LCOV"]
-    K --> L["E2E<br/>Playwright, if selected"]
-    L --> M["SonarQube<br/>analysis + Quality Gate, if selected"]
-    M --> N["Evidence + source integrity<br/>current-run checks"]
-    N --> O["READY / REVIEW / FAIL / BLOCKED"]
-
-    classDef optional stroke-dasharray: 5 5;
-    class I,L,M optional;
+flowchart TD
+    A[Explicit merge or push intent] --> B[Snapshot working tree]
+    B --> C[Run selected stages]
+    C --> D[Validate machine-readable evidence]
+    D --> E[Write namespaced report]
+    E --> F{Gate result}
+    F -->|all required checks pass| G[READY]
+    F -->|warnings need review| H[REVIEW]
+    F -->|check or evidence failed| I[FAIL or BLOCKED]
+    F -->|runtime failure| J[ERROR]
 ```
 
-The order is profile-driven. Unselected stages are not silently treated as passed;
-stages that are selected but lack a safe command or verifiable evidence become
+The order is profile-driven. Unselected stages are not silently treated as passed.
+The usual stage order is:
+
+### Stage pipeline
+
+```mermaid
+flowchart TD
+    A[Install / resolve dependencies] --> B[Secrets: Gitleaks]
+    B --> C[Static analysis: Semgrep]
+    C --> D[Dependencies and IaC: Trivy]
+    D --> E[Lint and typecheck]
+    E --> F[Unit tests + JUnit]
+    F --> G[Integration tests + JUnit]
+    G --> H[Build]
+    H --> I[Coverage + thresholds + LCOV]
+    I --> J[E2E: Playwright, optional]
+    J --> K[SonarQube, optional]
+    K --> L[Evidence + source integrity]
+    L --> M[Gate status]
+```
+
+The optional E2E and Sonar stages run only when selected in the project profile.
+Selected stages that lack a safe command or verifiable evidence become
 `BLOCKED`.
 
 | Stage | What it verifies | Typical implementation |
@@ -127,6 +140,22 @@ creates scoped analysis tokens and provisions a read-only browser account. Secre
 remain under `.local/` with restrictive permissions; no browser password change is
 required. Stop the services when finished with `./ci down`, or keep them running for
 browser review.
+
+### Sonar lifecycle
+
+```mermaid
+flowchart TD
+    A[Sonar stage selected] --> B{First project run?}
+    B -->|yes| C[Start Sonar and bootstrap project]
+    B -->|no| D[Use existing local Sonar project]
+    C --> E[Gate starts Sonar after app checks]
+    D --> E
+    E --> F[Scanner + Quality Gate]
+    F --> G[Write reports; retain named volumes]
+    G --> H[Optional UI review]
+    H --> I[Start UI and print credentials]
+    I --> J[Stop services with down]
+```
 
 The tracked `images.lock.json` already contains pinned core images. `doctor` and
 `lock-images` are maintenance/troubleshooting commands, not required for every new

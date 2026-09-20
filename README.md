@@ -128,8 +128,9 @@ To review Sonar results:
 ./ci down
 ```
 
-Gate job containers are removed after each run. `down` stops SonarQube and
-PostgreSQL but retains their local data volumes.
+After each gate, SonarQube and PostgreSQL are stopped automatically. Results remain
+in persistent volumes. Run `./ci up` to review them in the browser, then use
+`./ci down` when finished.
 
 ## 6. Supported stacks
 

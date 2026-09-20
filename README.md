@@ -162,10 +162,3 @@ Selected stages without a command or machine-readable evidence become
 
 Project profiles cannot override central image pins, security policies, scanner
 rules, thresholds or gates. Job containers do not receive the host Docker socket.
-
-## More information
-
-- [Technical architecture](technical_doc.md)
-- [Validation status and known limits](docs/VALIDATION.md)
-- [Security test contract](docs/security-test-contract.md)
-- [Research and source decisions](research.md)

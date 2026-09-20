@@ -1,0 +1,2 @@
+# Intentionally empty. Do not add blanket CVE exceptions to make CI green.
+# A human-reviewed exception needs rationale, scope, owner and expiry in docs.

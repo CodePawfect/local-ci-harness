@@ -1,0 +1,12 @@
+# Merge into src/test/resources/application-test.yml only when a real database is needed.
+# These values must refer to DISPOSABLE TEST infrastructure, never your production DB.
+spring:
+  datasource:
+    url: ${TEST_DB_URL}
+    username: ${TEST_DB_USER}
+    password: ${TEST_DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true

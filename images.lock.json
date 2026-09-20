@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "locked_at": "2026-09-20T13:18:23+0200",
+  "images": {
+    "postgres": {
+      "source": "postgres:17-bookworm",
+      "digest": "postgres@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "sonarqube": {
+      "source": "sonarqube:community",
+      "digest": "sonarqube@sha256:58b068af30bdfdccf91222de36e310529033e853dfae221b429cba80d10d5751",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "maven": {
+      "source": "maven:3.9-eclipse-temurin-21",
+      "digest": "maven@sha256:c2a2c58516d160f43b50f12baa427ca86989e0bc942609e04aff61da5d9a7d74",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "node": {
+      "source": "node:24-bookworm",
+      "digest": "node@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "python": {
+      "source": "python:3.12-slim",
+      "digest": "python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "gitleaks": {
+      "source": "ghcr.io/gitleaks/gitleaks:latest",
+      "digest": "ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "trivy": {
+      "source": "aquasec/trivy:latest",
+      "digest": "aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "semgrep": {
+      "source": "semgrep/semgrep:latest",
+      "digest": "semgrep/semgrep@sha256:34ab619bf1391a24bfda3f05debd0d8a6ce3093c2d5f9d39cfc00f83c1397823",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "sonar_scanner": {
+      "source": "sonarsource/sonar-scanner-cli:latest",
+      "digest": "sonarsource/sonar-scanner-cli@sha256:a3f4215076706c95a17a68c19322ee916e40a3acd081a8c1a1e839e0194afa57",
+      "architecture": "amd64",
+      "os": "linux"
+    },
+    "playwright": {
+      "source": "mcr.microsoft.com/playwright:v1.56.1-noble",
+      "digest": "mcr.microsoft.com/playwright@sha256:f1e7e01021efd65dd1a2c56064be399f3e4de00fd021ac561325f2bfbb2b837a",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "zap": {
+      "source": "ghcr.io/zaproxy/zaproxy:stable",
+      "digest": "ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef",
+      "architecture": "arm64",
+      "os": "linux"
+    }
+  }
+}

@@ -1,0 +1,61 @@
+<!-- Merge THIS profile into <profiles> in your existing single-module pom.xml.
+     Assumes a Spring Boot parent managing Surefire/Failsafe plugin versions.
+     Without that parent: pin compatible plugin versions explicitly in your POM.
+     Adapt existing JaCoCo/argLine/coverage configuration instead of duplicating it. -->
+<profile>
+  <id>ci</id>
+  <properties>
+    <jacoco.version>0.8.13</jacoco.version>
+    <jacoco.agent.argLine></jacoco.agent.argLine>
+  </properties>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.version}</version>
+        <executions>
+          <execution>
+            <id>ci-coverage-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+            <configuration>
+              <propertyName>jacoco.agent.argLine</propertyName>
+              <append>true</append>
+            </configuration>
+          </execution>
+          <execution>
+            <id>ci-coverage-report</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>@{jacoco.agent.argLine}</argLine>
+          <failIfNoTests>true</failIfNoTests>
+          <forkCount>1</forkCount>
+          <reuseForks>true</reuseForks>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <argLine>@{jacoco.agent.argLine}</argLine>
+          <failIfNoTests>true</failIfNoTests>
+          <includes><include>**/*IT.java</include></includes>
+          <forkCount>1</forkCount>
+          <reuseForks>true</reuseForks>
+        </configuration>
+        <executions>
+          <execution>
+            <goals><goal>integration-test</goal><goal>verify</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</profile>

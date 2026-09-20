@@ -1,0 +1,21 @@
+# Optional, separate from Sonar's internal DB. No host port, ephemeral app data.
+# Supply the pinned Postgres image from images.lock.json as POSTGRES_IMAGE.
+name: local-ci-test-services
+services:
+  test-postgres:
+    image: ${POSTGRES_IMAGE:?Use the postgres digest from images.lock.json}
+    environment:
+      POSTGRES_USER: ${TEST_DB_USER:?Set a test-only DB user}
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:?Set a test-only DB password}
+      POSTGRES_DB: app_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d app_test']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+networks:
+  default:
+    external: true
+    name: local-ci-harness

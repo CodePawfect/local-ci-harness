@@ -1,0 +1,7 @@
+.env
+harness.json
+.local/
+reports/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "backend": {
+      "path": "../backend",
+      "subdir": ".",
+      "sonar_key": "local-backend",
+      "maven_args": ["-Pci"],
+      "require_integration_tests": true,
+      "coverage_xml": "target/site/jacoco/jacoco.xml",
+      "coverage_min_lines": 70,
+      "coverage_min_branches": 60,
+      "environment": {"SPRING_PROFILES_ACTIVE": "test"}
+    },
+    "frontend": {
+      "path": "../frontend",
+      "subdir": ".",
+      "sonar_key": "local-frontend",
+      "coverage_min_lines": 70,
+      "coverage_min_branches": 60,
+      "sonar_sources": "src",
+      "sonar_test_inclusions": "**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx",
+      "environment": {},
+      "e2e_script": "test:e2e"
+    }
+  },
+  "images": {
+    "postgres": "postgres:17-bookworm",
+    "sonarqube": "sonarqube:community",
+    "maven": "maven:3.9-eclipse-temurin-21",
+    "node": "node:24-bookworm",
+    "python": "python:3.12-slim",
+    "gitleaks": "ghcr.io/gitleaks/gitleaks:latest",
+    "trivy": "aquasec/trivy:latest",
+    "semgrep": "semgrep/semgrep:latest",
+    "sonar_scanner": "sonarsource/sonar-scanner-cli:latest",
+    "zap": "ghcr.io/zaproxy/zaproxy:stable"
+  },
+  "plugins": {
+    "sonar_maven": "5.8.0.7211",
+    "cyclonedx_maven": "2.9.1"
+  },
+  "container_runtime": {
+    "provider": "auto",
+    "profile": "default",
+    "auto_start": true
+  },
+  "step_timeout_seconds": 1200,
+  "container_memory": "4g",
+  "sonar": {"new_code_coverage": 80, "new_code_days": 30}
+}

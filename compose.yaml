@@ -1,0 +1,48 @@
+name: local-ci-harness
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?Run ./ci lock-images first}
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_DB: sonar
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./ci init first}
+    volumes:
+      - sonar-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U sonar -d sonar"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    # No database port is published on the host.
+  sonarqube:
+    image: ${SONARQUBE_IMAGE:?Run ./ci lock-images first}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: ${POSTGRES_PASSWORD:?Run ./ci init first}
+      SONAR_TELEMETRY_ENABLE: "false"
+    ports:
+      - "127.0.0.1:${SONAR_PORT:-9000}:9000"
+    volumes:
+      - sonar-data:/opt/sonarqube/data
+      - sonar-extensions:/opt/sonarqube/extensions
+      - sonar-logs:/opt/sonarqube/logs
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+      nproc: 8192
+    restart: unless-stopped
+volumes:
+  sonar-postgres:
+  sonar-data:
+  sonar-extensions:
+  sonar-logs:
+networks:
+  default:
+    name: local-ci-harness
+    external: true

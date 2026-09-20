@@ -1,0 +1,68 @@
+# Small, locally versioned safety rule set. NOT a complete OWASP ruleset.
+# ERROR = blocker; WARNING = explicit human review in the report.
+rules:
+  - id: java-noop-password-encoder
+    languages: [java]
+    severity: ERROR
+    message: "NoOpPasswordEncoder does not hash passwords. Use an appropriate password encoder."
+    pattern: NoOpPasswordEncoder.getInstance()
+    metadata: {cwe: CWE-256}
+  - id: java-insecure-random-for-security-review
+    languages: [java]
+    severity: WARNING
+    message: "Review Random usage. Security tokens require a cryptographically secure generator; simulations do not."
+    pattern: new Random(...)
+    metadata: {cwe: CWE-338}
+  - id: java-shell-execution-review
+    languages: [java]
+    severity: WARNING
+    message: "Review process execution for user-controlled arguments, allowlisting and command injection."
+    pattern-either:
+      - pattern: Runtime.getRuntime().exec(...)
+      - pattern: new ProcessBuilder(...)
+    metadata: {cwe: CWE-78}
+  - id: java-string-built-sql-review
+    languages: [java]
+    severity: WARNING
+    message: "Review concatenated SQL. Parameterize data; allowlist identifiers."
+    pattern-either:
+      - pattern: $S.executeQuery($A + $B)
+      - pattern: $S.executeUpdate($A + $B)
+      - pattern: $S.createNativeQuery($A + $B)
+    metadata: {cwe: CWE-89}
+  - id: js-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "Do not evaluate dynamically supplied JavaScript. Replace eval with explicit parsing/dispatch."
+    pattern: eval(...)
+    metadata: {cwe: CWE-95}
+  - id: js-new-function
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "Dynamic Function construction executes code. Replace with explicit parsing/dispatch."
+    pattern: new Function(...)
+    metadata: {cwe: CWE-95}
+  - id: node-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "TLS certificate validation must not be disabled."
+    pattern-either:
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+      - pattern: "{rejectUnauthorized: false, ...}"
+    metadata: {cwe: CWE-295}
+  - id: react-html-injection-review
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "Review the full data flow and sanitization for dangerouslySetInnerHTML; this is not automatically a vulnerability."
+    pattern: "<$TAG ... dangerouslySetInnerHTML={$VALUE} ... />"
+    metadata: {cwe: CWE-79}
+  - id: next-public-sensitive-variable-name
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "This NEXT_PUBLIC variable name suggests a secret. Public variables can be bundled into browser code. Rename and keep it server-only; review actual exposure."
+    patterns:
+      - pattern: process.env.$NAME
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: ^NEXT_PUBLIC_.*(SECRET|PRIVATE_KEY|PASSWORD|ACCESS_TOKEN)$
+    metadata: {cwe: CWE-200}

@@ -20,6 +20,63 @@ class HarnessError(RuntimeError):
     """Configuration, infrastructure or verification error; never a passing check."""
 
 
+class InfrastructureError(HarnessError):
+    """The host/runtime prevented a meaningful verification step."""
+
+
+DEFAULT_CONTAINER_MEMORY = "4g"
+DEFAULT_SONAR_CONTAINER_MEMORY = "6g"
+DEFAULT_SONAR_MIN_RUNTIME_MEMORY = "8g"
+
+_MEMORY_UNITS = {
+    "b": 1,
+    "k": 1024,
+    "kb": 1024,
+    "ki": 1024,
+    "kib": 1024,
+    "m": 1024 ** 2,
+    "mb": 1024 ** 2,
+    "mi": 1024 ** 2,
+    "mib": 1024 ** 2,
+    "g": 1024 ** 3,
+    "gb": 1024 ** 3,
+    "gi": 1024 ** 3,
+    "gib": 1024 ** 3,
+    "t": 1024 ** 4,
+    "tb": 1024 ** 4,
+    "ti": 1024 ** 4,
+    "tib": 1024 ** 4,
+}
+
+
+def memory_bytes(value: str, field: str = "memory") -> int:
+    """Convert a safe Docker-style memory value to bytes."""
+    if not isinstance(value, str):
+        raise HarnessError(f"{field} must be a positive value such as 4g")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(b|k|kb|ki|kib|m|mb|mi|mib|g|gb|gi|gib|t|tb|ti|tib)",
+                         value.strip().lower())
+    if not match:
+        raise HarnessError(f"{field} must be a positive value such as 4g")
+    amount = float(match.group(1))
+    if amount <= 0:
+        raise HarnessError(f"{field} must be greater than zero")
+    result = int(amount * _MEMORY_UNITS[match.group(2)])
+    if result <= 0:
+        raise HarnessError(f"{field} must be at least one byte")
+    return result
+
+
+def format_memory(value: int) -> str:
+    """Format bytes for a human-readable diagnostic without rounding up."""
+    if value >= 1024 ** 3:
+        return f"{value / 1024 ** 3:.1f} GiB"
+    if value >= 1024 ** 2:
+        return f"{value / 1024 ** 2:.1f} MiB"
+    if value >= 1024:
+        return f"{value / 1024:.1f} KiB"
+    return f"{value} bytes"
+
+
 def read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -312,6 +369,8 @@ class Runner:
             if state not in ("PASS", "WARN"):
                 raise HarnessError("Invalid evidence status")
             item = Result(name, state, time.monotonic() - start, details=detail)
+        except InfrastructureError as exc:
+            item = Result(name, "ERROR", time.monotonic() - start, details=str(exc))
         except (HarnessError, OSError, ValueError, ET.ParseError, KeyError) as exc:
             item = Result(name, "FAIL", time.monotonic() - start, details=str(exc))
         self.results.append(item)
@@ -327,14 +386,16 @@ class Runner:
                *, entrypoint: str | None = None, network: str = "bridge", env: dict[str, str] | None = None,
                readonly_source: bool = False, mounts: list[tuple[Path, str, bool]] | None = None,
                allowed_codes: tuple[int, ...] = (0,), rootfs_readonly: bool = True,
-               host_gateway: bool = False) -> bool:
+               host_gateway: bool = False, memory: str | None = None) -> bool:
         start = time.monotonic()
         logfile = self.reports / f"{name}.log"
         cname = f"lci-{self.id.lower()}-{name.lower()}"[:120]
         uid, gid = os.getuid(), os.getgid()
+        memory_limit = memory or self.config.get("container_memory", DEFAULT_CONTAINER_MEMORY)
+        memory_bytes(memory_limit, "container memory limit")
         command = ["docker", "run", "--rm", "--init", "--name", cname, "--user", f"{uid}:{gid}",
                    "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--pids-limit=512",
-                   "--memory", self.config.get("container_memory", "4g"), "--network", network,
+                   "--memory", memory_limit, "--network", network,
                    "--shm-size=1g", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g,mode=1777"]
         if host_gateway:
             command += ["--add-host=host.docker.internal:host-gateway"]

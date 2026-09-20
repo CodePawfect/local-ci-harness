@@ -3,58 +3,218 @@
 > Local-first, policy-controlled CI for existing Git repositories.
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
-[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL2-0f766e.svg)](#platforms)
+[![Python 3.10+](https://img.shields.io/badge/Python 3.10%2B-3776AB.svg)](https://www.python.org/)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL2-0f766e.svg)](#prerequisites)
 
-Run reproducible security, quality, test and build gates locally before a merge or
-push. No GitHub, Jenkins or CI server is required. Jobs are ephemeral containers;
-reports and evidence stay local.
+Run a reproducible local gate before merging a branch or pushing an already-merged
+`main`. No GitHub, Jenkins or hosted CI server is required. Jobs run in pinned,
+short-lived containers; reports and evidence stay local.
 
 Copyright 2026 codepawfect. Licensed under the [Apache License 2.0](LICENSE).
 
-## Quick start
+## 1. What happens in a normal gate?
 
-Prerequisites: Python 3.10+, Git, Docker CLI with Compose v2, and a supported
-container runtime. macOS uses Colima by default; Windows uses WSL2.
+The harness checks the exact current working tree, including uncommitted changes. It
+then runs the stages selected in `.ci/harness.json`, validates machine-readable
+evidence, and writes a namespaced report. It never merges, pushes or writes to `main`.
+
+```mermaid
+flowchart LR
+    A["Explicit intent<br/>merge-to-main or push-main"] --> B["Snapshot Git tree<br/>branch, HEAD, merge-base, source hash"]
+    B --> C["Install / resolve dependencies<br/>only when the profile needs it"]
+    C --> D["Secrets<br/>Gitleaks"]
+    D --> E["Static analysis<br/>Semgrep"]
+    E --> F["Dependencies & IaC<br/>Trivy / CycloneDX"]
+    F --> G["Lint + typecheck<br/>project commands"]
+    G --> H["Unit tests<br/>JUnit evidence"]
+    H --> I["Integration tests<br/>explicit command + evidence"]
+    I --> J["Build<br/>production/build command"]
+    J --> K["Coverage<br/>thresholds + LCOV"]
+    K --> L["E2E<br/>Playwright, if selected"]
+    L --> M["SonarQube<br/>analysis + Quality Gate, if selected"]
+    M --> N["Evidence + source integrity<br/>current-run checks"]
+    N --> O["READY / REVIEW / FAIL / BLOCKED"]
+
+    classDef optional stroke-dasharray: 5 5;
+    class I,L,M optional;
+```
+
+The order is profile-driven. Unselected stages are not silently treated as passed;
+stages that are selected but lack a safe command or verifiable evidence become
+`BLOCKED`.
+
+| Stage | What it verifies | Typical implementation |
+|---|---|---|
+| `secrets` | Secrets in the working tree and, for full gates, Git history | Gitleaks |
+| `static-analysis` | Central source-security rules | Semgrep |
+| `dependencies` | Dependency vulnerabilities and IaC findings | Trivy; CycloneDX for Maven |
+| `lint-typecheck` | Formatting/lint and type contracts | Project-defined argv commands |
+| `tests` | Executed unit/integration test assertions | JUnit evidence is required |
+| `integration` | Explicit service/API/database tests | Project-defined command + JUnit |
+| `coverage` | Actual line/branch counters and Sonar LCOV input | Coverage report + thresholds |
+| `build` | The configured production/build command | npm or Maven adapter |
+| `e2e` | Browser flows and E2E evidence | Playwright |
+| `sonar` | Exact analysis, issues and Quality Gate result | Local SonarQube |
+| `zap` | Explicit local deployment baseline scan | Run `./ci zap` with acknowledgement |
+
+### Gate results
+
+| Result | Exit code | Meaning |
+|---|---:|---|
+| `READY` | 0 | Required stages passed without warnings. |
+| `REVIEW` | 1 | The run passed but contains warnings to review. |
+| `FAIL` / `BLOCKED` | 1 | A check failed or required evidence/configuration is missing. |
+| `ERROR` | 2 | The runtime or harness could not produce a meaningful verification. |
+
+## 2. Prerequisites
+
+- Python 3.10+
+- Git
+- Docker CLI with Compose v2
+- A supported Docker runtime with internet access for pinned images and dependencies
+
+Runtime setup:
+
+- **macOS:** Colima is used by default. Sonar JavaScript/TypeScript analysis needs
+  at least 8 GiB exposed to the selected Colima profile.
+- **Linux:** Docker Engine and Compose v2.
+- **Windows:** run the harness inside WSL2 with Docker Desktop WSL integration or
+  Docker Engine in WSL2. Native PowerShell and `cmd.exe` are not supported.
+
+The normal project gate uses 4 GB per regular job container and 6 GB for the Sonar
+scanner. The runtime preflight checks the 8 GiB Sonar requirement before starting
+Sonar/PostgreSQL and does not resize the host runtime automatically.
+
+## 3. First-time setup
+
+Clone the harness once:
 
 ```bash
 git clone https://github.com/CodePawfect/local-ci-harness.git
 cd local-ci-harness
-
 ./ci init
-./ci doctor
-./ci lock-images --runtime
-
-# Interactive setup TUI: detect repo, choose adapter, select stages.
-./ci setup --repo /absolute/path/to/project
-./ci prompt --repo /absolute/path/to/project
-
-# Run only when the next action is a merge or push.
-./ci gate --repo /absolute/path/to/project --intent merge-to-main
-# After a local merge, while already on main:
-./ci gate --repo /absolute/path/to/project --intent push-main
 ```
 
-The setup writes `.ci/harness.json` and `.ci/agent-prompt.md` into the target
-repository. The harness never commits, merges or pushes for you.
+Connect a local project with the setup TUI:
 
-## Adapters and supported stacks
+```bash
+./ci setup --repo /absolute/path/to/project
+```
 
-| Adapter | Works well for | Notes |
+The TUI detects the repository, branch, adapter, lockfiles, scripts and evidence
+paths. Select the stages you want; for a normal quality gate, include `sonar`.
+Setup writes these files into the target repository:
+
+```text
+/absolute/path/to/project/.ci/harness.json
+/absolute/path/to/project/.ci/agent-prompt.md
+```
+
+It does not modify `package.json`, `pom.xml` or tests. `./ci prompt` is only needed
+when you intentionally want to regenerate the agent prompt.
+
+### First Sonar setup
+
+If `sonar` is selected, provision the local Sonar project once:
+
+```bash
+./ci up
+./ci bootstrap --repo /absolute/path/to/project
+```
+
+Bootstrap creates the project, assigns the local Quality Profile and Quality Gate,
+creates scoped analysis tokens and provisions a read-only browser account. Secrets
+remain under `.local/` with restrictive permissions; no browser password change is
+required. Stop the services when finished with `./ci down`, or keep them running for
+browser review.
+
+The tracked `images.lock.json` already contains pinned core images. `doctor` and
+`lock-images` are maintenance/troubleshooting commands, not required for every new
+project or every gate.
+
+## 4. Normal operation
+
+Run the gate only when the next action is explicit.
+
+### Feature branch ready to merge
+
+```bash
+./ci gate \
+  --repo /absolute/path/to/project \
+  --intent merge-to-main
+```
+
+The checkout must be on a non-`main` branch and the target branch must exist.
+
+### Already merged locally, ready to push `main`
+
+```bash
+./ci gate \
+  --repo /absolute/path/to/project \
+  --intent push-main
+```
+
+The checkout must already be on the target branch. The harness checks the local
+merged state but never performs the merge or push.
+
+### Reports and Sonar UI
+
+Every run is isolated by project and run ID:
+
+```text
+reports/<project-slug>/<run-id>/summary.json
+reports/<project-slug>/<run-id>/summary.md
+.local/projects/<project-slug>/runs/<run-id>/
+```
+
+Read only the current run's `summary.json` and `summary.md`. If you want to inspect
+the Sonar results in a browser after a gate, start the persisted Sonar services and
+print the read-only credentials:
+
+```bash
+./ci up
+./ci sonar credentials
+# Open http://127.0.0.1:9000
+./ci down
+```
+
+The gate's job containers are removed after the run. Sonar/PostgreSQL containers and
+their named volumes are managed separately; `down` removes containers but retains
+the local Sonar data.
+
+## 5. Agent workflow
+
+The generated `.ci/agent-prompt.md` tells an agent to:
+
+1. Run a gate only for an explicit merge or push intent.
+2. Read the current run's summary and evidence.
+3. Repair reproducible code failures and rerun the same gate.
+4. Stop on secrets, infrastructure errors or unclear security findings.
+5. Stop after three failed repairs for the same cause.
+6. Never commit, merge, push or write to `main` automatically.
+
+Agents must not weaken tests, coverage thresholds, scanner rules, exclusions,
+timeouts or evidence requirements to make a gate pass.
+
+## 6. Adapters and supported stacks
+
+| Adapter | Best fit | Included behavior |
 |---|---|---|
-| `generic` | Any Git repository | Snapshot, Gitleaks, Semgrep and detectable dependency/IaC checks. Tests/build/coverage must be explicit. |
-| `next-npm` | Next.js, React and TypeScript with npm | Install, lint, typecheck, tests, coverage, build, optional Playwright and Sonar. |
-| `next-fullstack` | Next.js with server/API/integration code | Same as `next-npm`, plus explicit integration commands and test services. |
-| `spring-maven` | Spring Boot, Java and a single Maven module | Surefire/Failsafe, JaCoCo, CycloneDX, Trivy and Sonar. |
-| `custom` | Vite/React, Vue, Angular, Svelte, Python, Go, Rust and other stacks | Safe argv arrays and explicit evidence paths; no shell-string execution or guessed success criteria. |
+| `next-npm` | Next.js, React and TypeScript using npm | npm, lint, typecheck, tests, coverage, build, optional Playwright and Sonar |
+| `next-fullstack` | Next.js with server/API/integration code | `next-npm` plus explicit integration commands |
+| `spring-maven` | Spring Boot, Java, one Maven module | Surefire/Failsafe, JaCoCo, CycloneDX, Trivy and Sonar |
+| `generic` | Any Git repository | Snapshot, Gitleaks, Semgrep and detectable dependency/IaC checks |
+| `custom` | Vite/React, Vue, Angular, Svelte, Python, Go, Rust and other stacks | Safe argv arrays and explicit evidence paths |
 
-Plain React/Vite is supported through `custom`; it does not yet have a dedicated
-adapter. pnpm, Yarn, Gradle and multi-module Maven require explicit custom handling
-or separate adapter work. Missing evidence is `BLOCKED`, never silently skipped.
+Plain React/Vite currently uses `custom`; it has no dedicated adapter. pnpm, Yarn,
+Gradle and multi-module Maven require explicit custom handling or future adapter work.
+Shell strings are never evaluated; commands are stored as argument arrays.
 
-## Monorepos
+## 7. Monorepos and other edge cases
 
-One profile evaluates one application directory inside the Git root:
+### Monorepos
+
+V1 evaluates one application directory inside the Git root:
 
 ```bash
 ./ci setup \
@@ -66,100 +226,28 @@ One profile evaluates one application directory inside the Git root:
   --intent merge-to-main
 ```
 
-`apps/web`, `apps/api` and `services/catalog` are valid examples. Commands and
-evidence paths are relative to the selected subdirectory. External paths and external
-symlinks are rejected. V1 does not automatically aggregate multiple apps into one
-coverage or Sonar result; use separate worktrees/profiles or an explicit aggregate
-command.
+Commands and evidence paths are relative to `apps/web`. V1 does not aggregate
+multiple applications into one coverage or Sonar result. Use separate profiles or
+an explicit, reviewed aggregate command for `apps/web`, `apps/api` and similar
+layouts.
 
-## SonarQube
+### Missing commands or evidence
 
-Sonar is optional. If the profile contains the `sonar` stage, provision it once:
+The harness never guesses a successful test, build or coverage result. A selected
+stage without an executable command or machine-readable evidence is `BLOCKED`.
 
-```bash
-./ci up
-./ci bootstrap --repo /absolute/path/to/project
-```
+### Repository boundaries
 
-The bootstrap rotates the internal admin password, creates a least-privilege UI
-account, assigns the project quality profile/gate and creates scoped analysis tokens.
-To view results in the browser:
+External paths, external/dangling source symlinks and Git submodules are rejected by
+the snapshot contract. Builds, package installation and tests execute project code;
+only run trusted repositories.
 
-```bash
-./ci sonar credentials
-# Open http://127.0.0.1:9000 with the displayed read-only credentials.
-./ci down                 # stop containers; keep persistent volumes
-```
+### Security scope
 
-The admin password and UI password are local `0600` secrets under `.local/`; they are
-never written to project profiles or reports. A normal profile gate starts and removes
-the Sonar/Postgres containers automatically. Allocate more than 4 GB to Colima/Docker
-for reliable JavaScript/TypeScript analysis.
-
-## Agent prompt
-
-Copy this into an agent working in the target repository. Replace the two paths:
-
-```text
-You are working in an existing local Git repository.
-
-Use the Local CI Harness to verify this project before an explicitly requested merge
-or push. Set:
-
-HARNESS_DIR="/absolute/path/to/local-ci-harness"
-PROJECT_DIR="/absolute/path/to/project"
-
-1. Run `cd "$HARNESS_DIR" && ./ci doctor`.
-2. If `"$PROJECT_DIR/.ci/harness.json"` does not exist, run
-   `./ci setup --repo "$PROJECT_DIR" --non-interactive`. Do not use --force without
-   user approval. Read the generated profile and agent prompt.
-3. If the profile contains `sonar`, run `./ci up` and
-   `./ci bootstrap --repo "$PROJECT_DIR"` once.
-4. Run a gate only for an explicit intent:
-   - feature branch ready to merge: `./ci gate --repo "$PROJECT_DIR" --intent merge-to-main`
-   - already on main before push: `./ci gate --repo "$PROJECT_DIR" --intent push-main`
-5. Read only the current run's `summary.json` and `summary.md`. Fix reproducible code
-   failures and rerun the gate.
-
-Never weaken tests, coverage thresholds, scanner rules, exclusions, timeouts or
-evidence requirements. Stop on secrets, infrastructure failures or unclear security
-findings. Stop after three failed repairs for the same cause. Never commit, merge,
-push or write to main automatically.
-```
-
-## Results and exit codes
-
-Reports are namespaced per project and run:
-
-```text
-reports/<project-slug>/<run-id>/summary.json
-reports/<project-slug>/<run-id>/summary.md
-.local/projects/<project-slug>/runs/<run-id>/
-```
-
-| Result | Exit code | Meaning |
-|---|---:|---|
-| `READY` | 0 | Required stages passed without warnings. |
-| `REVIEW` / `FAIL` / `BLOCKED` | 1 | Review, verification failure or missing evidence. |
-| `ERROR` | 2 | Configuration or infrastructure failure. |
-
-## Platforms
-
-- **macOS:** Docker CLI + Compose v2 and Colima. Colima is the default runtime.
-- **Linux:** Docker Engine + Compose v2.
-- **Windows:** run the harness inside WSL2 (Ubuntu or another Linux distribution),
-  using Docker Desktop WSL integration or Docker Engine in WSL2. Native PowerShell
-  and `cmd.exe` are not supported.
-
-## Security model
-
-Commands are stored as argument arrays, not shell strings. Central scanner policies,
-image digests, gates and thresholds cannot be overridden by project profiles. Job
-containers do not receive the host Docker socket. Builds and package installation
-execute project code, so only run trusted repositories.
-
-`.env`, `.local/` and `reports/` are local state and ignored by Git. Do not commit
-credentials or generated reports.
+Central policies, image digests, scanner rules, thresholds and gates cannot be
+overridden by project profiles. Job containers do not receive the host Docker socket.
+This is a local verification harness, not an OWASP certification product or a
+complete adversarial-code sandbox.
 
 ## Documentation and contributing
 
@@ -169,11 +257,11 @@ credentials or generated reports.
 - [Research and source decisions](research.md)
 - [Codex/agent template](templates/AGENTS.project.md)
 
-Run the full test suite before a change:
+Run the full harness test suite before submitting a change:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-The current harness test suite contains 89 tests. Contributions that weaken a gate,
-coverage threshold or security policy require explicit documentation and review.
+The current suite contains 96 tests. Changes that weaken a gate, coverage threshold
+or security policy require explicit documentation and review.

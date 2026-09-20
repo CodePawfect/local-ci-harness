@@ -10,9 +10,10 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
-from core import (HarnessError, Runner, capture, frontend_coverage, git, jacoco_coverage,
-                  read_json, require_junit, safe_relative, snapshot, source_files,
-                  validate_semgrep, validate_trivy, verify_unchanged, write_json)
+from core import (HarnessError, InfrastructureError, Runner, capture, format_memory,
+                  frontend_coverage, git, jacoco_coverage, memory_bytes, read_json,
+                  require_junit, safe_relative, snapshot, source_files, validate_semgrep,
+                  validate_trivy, verify_unchanged, write_json)
 
 
 class TempCase(unittest.TestCase):
@@ -231,6 +232,18 @@ class EvidenceTests(TempCase):
         self.assertEqual(validate_trivy(self.json("trivy.json", {}), False)["blocking_findings"], 0)
 
 
+class MemoryTests(unittest.TestCase):
+    def test_memory_values_are_converted_safely(self):
+        self.assertEqual(memory_bytes("4g"), 4 * 1024 ** 3)
+        self.assertEqual(memory_bytes("512MiB"), 512 * 1024 ** 2)
+        self.assertEqual(format_memory(8 * 1024 ** 3), "8.0 GiB")
+
+    def test_invalid_memory_values_are_rejected(self):
+        for value in ("", "0g", "0.1b", "4", "4g; rm -rf /", "-1g"):
+            with self.subTest(value=value), self.assertRaises(HarnessError):
+                memory_bytes(value)
+
+
 class RunnerTests(TempCase):
     def setUp(self):
         super().setUp()
@@ -274,6 +287,13 @@ class RunnerTests(TempCase):
         path = self.file("bad.json", "not JSON")
         self.assertFalse(self.r.check("bad", lambda: read_json(path)))
 
+    def test_infrastructure_error_stays_distinct_from_app_failure(self):
+        def runtime_failure():
+            raise InfrastructureError("Docker runtime is too small")
+
+        self.assertFalse(self.r.check("runtime", runtime_failure))
+        self.assertEqual(self.r.results[-1].status, "ERROR")
+
     @patch("core.subprocess.Popen")
     def test_docker_token_not_in_argv_and_policy_readonly(self, popen):
         proc = popen.return_value
@@ -286,6 +306,20 @@ class RunnerTests(TempCase):
         self.assertTrue(any("dst=/policy,readonly" in arg for arg in command))
         self.assertFalse(any("docker.sock" in arg for arg in command))
         self.assertIn("--read-only", command)
+
+    @patch("core.subprocess.Popen")
+    def test_docker_accepts_separate_stage_memory_limit(self, popen):
+        popen.return_value.wait.return_value = 0
+        popen.return_value.poll.return_value = 0
+        self.assertTrue(self.r.docker("sonar", "node", [], memory="6g"))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("--memory") + 1], "6g")
+
+    @patch("core.subprocess.Popen")
+    def test_docker_rejects_invalid_memory_limit_before_start(self, popen):
+        with self.assertRaises(HarnessError):
+            self.r.docker("sonar", "node", [], memory="4g; unsafe")
+        popen.assert_not_called()
 
     @patch("core.subprocess.Popen")
     def test_docker_nonzero_never_passes(self, popen):

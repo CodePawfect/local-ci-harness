@@ -4,7 +4,7 @@ Erstellt: **20. September 2026**.
 
 ## In dieser Umgebung ausgeführt
 
-`python3 -m unittest discover -s tests -v`: **89 Tests erfolgreich**.
+`python3 -m unittest discover -s tests -v`: **96 Tests erfolgreich**.
 
 Die Tests verwenden echte temporäre lokale Git-Repositories, modifizierte und neue
 Dateien, unabhängige History-Kopien, Linked Worktrees und Symlinks. Geprüft werden
@@ -58,8 +58,14 @@ Damit sind echte Docker-/Next-/Playwright-/Gitleaks-/Trivy-/Semgrep-Läufe bewie
 die Sonar-Analyse und ein Sonar-Quality-Gate bleiben wegen dieser Infrastrukturgrenze
 offen. ZAP und Maven wurden in dieser Abnahme nicht ausgeführt.
 
+Der Harness trennt dieses Ressourcenproblem nun explizit: normale Job-Container
+bleiben standardmäßig auf `4g` begrenzt, der Sonar-Scanner erhält standardmäßig `6g`
+und vor dem Sonar-Start werden mindestens `8 GiB` Docker-Runtime-Speicher verlangt.
+Der neue Preflight wurde unit-getestet; ein erneuter echter Sonar-Lauf mit der
+erhöhten Colima-Konfiguration ist noch nicht Bestandteil dieser Dokumentation.
+
 Die App-Vorlagen sind keine vollständigen Apps. Es sind noch keine fachlichen
-Backend-/Frontend-Sicherheitsregressionen für dein Produkt geschrieben. Die 89 Tests
+Backend-/Frontend-Sicherheitsregressionen für dein Produkt geschrieben. Die 96 Tests
 verifizieren den Harness, **nicht** die Sicherheit oder Funktion deiner Anwendung.
 
 ## Lokale Erstabnahme

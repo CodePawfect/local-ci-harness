@@ -232,9 +232,15 @@ class ProjectProfileTests(unittest.TestCase):
              patch("main.load_install_config", return_value={}), \
              patch("main.ensure_docker"), patch("main.ensure_network"), \
              patch("main.compose") as compose, patch("main.wait_ready"), \
+             patch("main.sonar_runtime_requirements", return_value={
+                 "docker_memory": "8.0 GiB",
+                 "required_memory": "8.0 GiB",
+                 "scanner_container_memory": "6g",
+             }) as resources, \
              patch("main.sonar_url", return_value="http://127.0.0.1:9000"), \
              patch("main.run_profile_pipeline", side_effect=run_pipeline):
             self.assertEqual(gate_project("ignored", "merge-to-main"), 0)
+        resources.assert_called_once_with({})
         self.assertEqual(compose.call_args_list, [call("up", "-d"), call("down", "--remove-orphans")])
 
 

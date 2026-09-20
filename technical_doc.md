@@ -114,6 +114,31 @@ sie enthalten die lokale Baseline und vermeiden eine erneute Provisionierung bei
 Gate. `./ci up` ist weiterhin der manuelle Bootstrap-Modus und hat bewusst keinen
 automatischen Shutdown.
 
+### Ressourcen für Sonar
+
+Die zentrale Installationskonfiguration trennt das Limit für normale Job-Container
+von dem Limit des Sonar-Scanners:
+
+```json
+{
+  "container_memory": "4g",
+  "sonar_container_memory": "6g",
+  "sonar_min_runtime_memory": "8g"
+}
+```
+
+`container_memory` wird auf normale `docker run`-Jobs angewendet. Der
+JavaScript-/TypeScript-Scanner erhält `sonar_container_memory`, weil seine
+Analyzer-Bridge deutlich mehr Speicher benötigen kann. `sonar_min_runtime_memory`
+beschreibt dagegen den gesamten vom aktiven Docker-Daemon gemeldeten Speicher für
+SonarQube, PostgreSQL und den Scanner zusammen. Vor `gate`/`up` wird diese Grenze
+geprüft. Bei zu wenig Speicher blockiert der Lauf mit einer konkreten Meldung; der
+Harness startet oder skaliert Colima, Docker Desktop oder WSL2 nicht ungefragt neu.
+
+Das ist eine Ressourcenfreigabe und keine Abschwächung der Sonar-Regeln, Coverage-
+Schwellen oder Quality Gates. Ein realer Sonar-Lauf mit mindestens 8 GiB Runtime-
+Speicher bleibt eine separate Infrastrukturabnahme.
+
 Das externe Netzwerk `local-ci-harness` wird bei Bedarf angelegt und bleibt als
 harmloses Docker-Netzwerk erhalten. Ein optionaler Test-Postgres aus
 `examples/compose.test-db.yaml` oder ein ZAP-Ziel muss projektbezogen orchestriert

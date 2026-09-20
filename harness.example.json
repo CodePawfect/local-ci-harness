@@ -47,5 +47,7 @@
   },
   "step_timeout_seconds": 1200,
   "container_memory": "4g",
+  "sonar_container_memory": "6g",
+  "sonar_min_runtime_memory": "8g",
   "sonar": {"new_code_coverage": 80, "new_code_days": 30}
 }

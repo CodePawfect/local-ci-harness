@@ -182,6 +182,18 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertIsNone(selected_context)
 
+    def test_sonar_runtime_preflight_rejects_small_docker_memory(self):
+        with patch("main.docker_memory_bytes", return_value=4 * 1024 ** 3):
+            with self.assertRaisesRegex(HarnessError, "Increase Colima/Docker memory"):
+                main.sonar_runtime_requirements({})
+
+    def test_sonar_runtime_preflight_reports_scanner_limit(self):
+        with patch("main.docker_memory_bytes", return_value=8 * 1024 ** 3):
+            result = main.sonar_runtime_requirements({})
+        self.assertEqual(result["docker_memory"], "8.0 GiB")
+        self.assertEqual(result["required_memory"], "8.0 GiB")
+        self.assertEqual(result["scanner_container_memory"], "6g")
+
     def test_zap_evidence_has_scanned_site(self):
         path = self.root / "zap.json"
         write_json(path, {"site": [{"@name": "http://frontend:3000"}]})

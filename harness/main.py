@@ -19,8 +19,10 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Callable
 
-from core import (HarnessError, Runner, Snapshot, capture, frontend_coverage, git,
-                  jacoco_coverage, read_json, require_junit, safe_relative, snapshot,
+from core import (HarnessError, InfrastructureError, Runner, Snapshot, capture,
+                  frontend_coverage, git, DEFAULT_CONTAINER_MEMORY, DEFAULT_SONAR_CONTAINER_MEMORY,
+                  DEFAULT_SONAR_MIN_RUNTIME_MEMORY, format_memory, jacoco_coverage,
+                  memory_bytes, read_json, require_junit, safe_relative, snapshot,
                   tree_hash, validate_semgrep, validate_trivy, verify_unchanged, write_json)
 from project import (STAGES, branch_context, configured_command, detect_project, evidence_path,
                      file_sha256, load_profile, profile_from_detection, profile_issues,
@@ -51,8 +53,21 @@ def load_config() -> dict:
         for k in ("coverage_min_lines", "coverage_min_branches"):
             if not 0 <= project.get(k, -1) <= 100:
                 raise HarnessError(f"{target}.{k} must be between 0 and 100")
+    configured_memory(config, "container_memory", DEFAULT_CONTAINER_MEMORY)
+    sonar_memory = configured_memory(config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY)
+    minimum_sonar_memory = configured_memory(
+        config, "sonar_min_runtime_memory", DEFAULT_SONAR_MIN_RUNTIME_MEMORY
+    )
+    if memory_bytes(minimum_sonar_memory, "sonar_min_runtime_memory") < memory_bytes(sonar_memory, "sonar_container_memory"):
+        raise HarnessError("sonar_min_runtime_memory must be at least sonar_container_memory")
     runtime_settings(config)
     return config
+
+
+def configured_memory(config: dict, key: str, default: str) -> str:
+    value = config.get(key, default)
+    memory_bytes(value, key)
+    return value
 
 
 def source_path(project: dict) -> Path:
@@ -196,6 +211,42 @@ def ensure_docker(config: dict | None = None) -> None:
                 f"{os.environ.get('DOCKER_HOST')}: {exc}"
             ) from exc
         raise
+
+
+def docker_memory_bytes() -> int:
+    """Return the memory exposed by the active Docker daemon."""
+    try:
+        raw = capture(["docker", "info", "--format", "{{.MemTotal}}"], timeout=30).strip().strip('"')
+    except HarnessError as exc:
+        raise InfrastructureError(f"Cannot inspect Docker runtime memory: {exc}") from exc
+    if not re.fullmatch(r"\d+", raw):
+        raise InfrastructureError(f"Docker did not report a numeric memory limit (got {raw!r})")
+    total = int(raw)
+    if total <= 0:
+        raise InfrastructureError("Docker reported no available memory")
+    return total
+
+
+def sonar_runtime_requirements(config: dict) -> dict[str, str]:
+    """Validate the runtime before starting the memory-heavy Sonar stack."""
+    required_value = configured_memory(config, "sonar_min_runtime_memory", DEFAULT_SONAR_MIN_RUNTIME_MEMORY)
+    scanner_value = configured_memory(config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY)
+    required = memory_bytes(required_value, "sonar_min_runtime_memory")
+    scanner = memory_bytes(scanner_value, "sonar_container_memory")
+    if required < scanner:
+        raise HarnessError("sonar_min_runtime_memory must be at least sonar_container_memory")
+    available = docker_memory_bytes()
+    if available < required:
+        raise InfrastructureError(
+            "Sonar analysis requires at least " + format_memory(required) +
+            f" from the Docker runtime, but only {format_memory(available)} is available. "
+            "Increase Colima/Docker memory and retry; the harness will not resize or restart the runtime automatically."
+        )
+    return {
+        "docker_memory": format_memory(available),
+        "required_memory": format_memory(required),
+        "scanner_container_memory": scanner_value,
+    }
 
 
 def ensure_network() -> None:
@@ -542,7 +593,8 @@ def run_profile_sonar(r: Runner, profile: dict, snap: Snapshot, slug: str) -> No
         r.docker("project-sonar", "maven", ["-Dmaven.repo.local=/cache/maven/repository", "-B", "-ntp",
                                                *profile_maven_args(profile), *props, goal], snap, env=env,
                  network=NETWORK, entrypoint="mvn",
-                 mounts=[(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)])
+                 mounts=[(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)],
+                 memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     else:
         source_dir = profile.get("sonar_sources", "src")
         test_inclusions = profile.get("sonar_test_inclusions", "**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx")
@@ -550,7 +602,8 @@ def run_profile_sonar(r: Runner, profile: dict, snap: Snapshot, slug: str) -> No
                   f"-Dsonar.test.inclusions={test_inclusions}", f"-Dsonar.exclusions={test_inclusions}",
                   "-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"]
         r.docker("project-sonar", "sonar_scanner", props, snap, env=env, network=NETWORK,
-                 entrypoint="sonar-scanner", mounts=[(cache("sonar"), "/cache/sonar", False)])
+                 entrypoint="sonar-scanner", mounts=[(cache("sonar"), "/cache/sonar", False)],
+                 memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     r.check("project-sonar-evidence",
             lambda: export_analysis(ROOT, output, output / "report-task.txt", sonar_key, sonar_url()))
 
@@ -749,7 +802,7 @@ def cache(name: str) -> Path:
 
 
 def maven(r: Runner, name: str, snap: Snapshot, goals: list[str], extra_env: dict | None = None,
-          with_project_args: bool = True) -> bool:
+          with_project_args: bool = True, memory: str | None = None) -> bool:
     project = r.config["projects"]["backend"]
     env = dict(project.get("environment", {}), MAVEN_CONFIG="/cache/maven", SONAR_USER_HOME="/cache/sonar")
     if extra_env:
@@ -758,7 +811,8 @@ def maven(r: Runner, name: str, snap: Snapshot, goals: list[str], extra_env: dic
     if with_project_args:
         args += project.get("maven_args", [])
     return r.docker(name, "maven", args + goals, snap, entrypoint="mvn", network=NETWORK, env=env,
-                    mounts=[(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)])
+                    mounts=[(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)],
+                    memory=memory)
 
 
 def node(r: Runner, name: str, snap: Snapshot, args: list[str], image: str = "node") -> bool:
@@ -902,14 +956,16 @@ def sonar_analysis(r: Runner, target: str, snap: Snapshot) -> None:
     if target == "backend":
         goal = f"org.sonarsource.scanner.maven:sonar-maven-plugin:{r.config['plugins']['sonar_maven']}:sonar"
         props += [f"-Dsonar.coverage.jacoco.xmlReportPaths={project['coverage_xml']}"]
-        maven(r, "backend-sonar", snap, [goal, *props], env)
+        maven(r, "backend-sonar", snap, [goal, *props], env,
+              memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     else:
         tests = project.get("sonar_test_inclusions", "**/*.test.ts,**/*.test.tsx")
         props += [f"-Dsonar.sources={project['sonar_sources']}", f"-Dsonar.tests={project['sonar_sources']}",
                   f"-Dsonar.test.inclusions={tests}", f"-Dsonar.exclusions={tests}",
                   "-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"]
         r.docker("frontend-sonar", "sonar_scanner", props, snap, env=env, network=NETWORK,
-                 entrypoint="sonar-scanner", mounts=[(cache("sonar"), "/cache/sonar", False)])
+                 entrypoint="sonar-scanner", mounts=[(cache("sonar"), "/cache/sonar", False)],
+                 memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     r.check(f"{target}-sonar-evidence", lambda: export_analysis(ROOT, output, output / "report-task.txt",
                                                               project["sonar_key"], sonar_url()))
 
@@ -1081,6 +1137,12 @@ def doctor(config: dict) -> None:
     ensure_docker(config)
     print("Docker:", capture(["docker", "version", "--format", "{{.Server.Version}}/{{.Server.Arch}}"], timeout=30))
     print("Compose:", capture(["docker", "compose", "version"]))
+    available = docker_memory_bytes()
+    required = configured_memory(config, "sonar_min_runtime_memory", DEFAULT_SONAR_MIN_RUNTIME_MEMORY)
+    scanner = configured_memory(config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY)
+    print("Docker memory:", format_memory(available))
+    print("Sonar minimum:", format_memory(memory_bytes(required, "sonar_min_runtime_memory")))
+    print("Sonar scanner container:", scanner)
     for target, project in config["projects"].items():
         path = source_path(project)
         print(f"{target}: {path} / {project['subdir']}")
@@ -1144,10 +1206,11 @@ def gate_project(repo_arg: str, intent: str) -> int:
 
     def start_sonar() -> dict[str, str]:
         nonlocal sonar_started
+        resources = sonar_runtime_requirements(config)
         compose("up", "-d")
         sonar_started = True
         wait_ready(sonar_url())
-        return {"service": "sonarqube", "url": sonar_url()}
+        return {"service": "sonarqube", "url": sonar_url(), **resources}
 
     result = 2
     try:
@@ -1234,9 +1297,12 @@ def main() -> int:
         elif args.command == "lock-images":
             lock_images(config, args.runtime, args.update)
         elif args.command == "up":
+            requirements = sonar_runtime_requirements(config)
             compose("up", "-d")
             wait_ready(sonar_url())
             print("SonarQube:", sonar_url())
+            print("Runtime:", requirements["docker_memory"],
+                  f"(minimum {requirements['required_memory']}; scanner {requirements['scanner_container_memory']})")
         elif args.command == "down":
             compose("down")
             print("Stopped services. Persistent Sonar data retained; no volumes deleted.")

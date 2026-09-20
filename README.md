@@ -53,6 +53,10 @@ projects need at least 8 GiB available to Docker/Colima.
 
 ## 3. Setup
 
+Run these commands from the cloned `local-ci-harness` directory. Run
+`./ci init` once per clone. On macOS, the harness starts the default Colima
+profile when needed.
+
 The normal path is:
 
 ```bash
@@ -105,7 +109,8 @@ merged state but never performs the merge or push.
 
 ## 5. Reports and Sonar
 
-Reports are namespaced by project and run:
+Reports are written inside the `local-ci-harness` directory under
+`reports/<project-slug>/<run-id>/`:
 
 ```text
 reports/<project-slug>/<run-id>/summary.json
@@ -136,14 +141,16 @@ in persistent volumes. Run `./ci up` to review them in the browser, then use
 
 | Stack | Adapter |
 |---|---|
-| Next.js, React or TypeScript using npm | `next-npm` / `next-fullstack` |
+| Next.js with npm | `next-npm` / `next-fullstack` |
 | Spring Boot, single Maven module | `spring-maven` |
 | Any repository with baseline checks | `generic` |
 | Vite/React, Vue, Angular, Python, Go, Rust and other stacks | `custom` |
 
 Adapters can run linting, typechecking, tests, coverage, builds, Playwright E2E
 and Sonar when the profile provides the required commands and evidence. Plain
-React/Vite uses `custom`. pnpm, Yarn, Gradle and multi-module Maven need
+React/Vite uses `custom`. For custom projects, edit `.ci/harness.json`
+with safe argument-array commands and evidence paths; missing required evidence
+results in `BLOCKED`. pnpm, Yarn, Gradle and multi-module Maven need
 explicit custom configuration.
 
 ## 7. Monorepos and limits

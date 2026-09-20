@@ -46,9 +46,9 @@ def _menu(stdscr, title: str, options: list[str], selected: int = 0,
         stdscr.erase()
         height, width = stdscr.getmaxyx()
         stdscr.addnstr(0, 0, title, max(1, width - 1), curses.A_BOLD)
-        help_text = "↑↓ auswählen · Enter bestätigen"
+        help_text = "↑↓ move · Enter confirm"
         if multi:
-            help_text = "↑↓ bewegen · Leertaste auswählen · Enter bestätigen"
+            help_text = "↑↓ move · Space toggle · Enter confirm"
         stdscr.addnstr(1, 0, help_text, max(1, width - 1), curses.A_DIM)
         for index, option in enumerate(options):
             if 3 + index >= height - 1:
@@ -80,7 +80,7 @@ def _confirm(stdscr, message: str) -> bool:
     height, width = stdscr.getmaxyx()
     stdscr.erase()
     stdscr.addnstr(0, 0, message, max(1, width - 1), curses.A_BOLD)
-    stdscr.addnstr(2, 0, "y bestätigen · n abbrechen", max(1, width - 1), curses.A_DIM)
+    stdscr.addnstr(2, 0, "y confirm · n cancel", max(1, width - 1), curses.A_DIM)
     stdscr.refresh()
     while True:
         key = stdscr.getch()
@@ -99,7 +99,7 @@ def _session(stdscr, detection: Detection) -> tuple[dict, bool]:
     default_kind = kinds.index(detection.kind) if detection.kind in kinds else kinds.index("custom")
     kind_index = _menu(
         stdscr,
-        f"Projektart für {detection.repo}",
+        f"Project type for {detection.repo}",
         [f"{name}: {KIND_LABELS[name]}" for name in kinds],
         selected=default_kind,
     )
@@ -108,14 +108,14 @@ def _session(stdscr, detection: Detection) -> tuple[dict, bool]:
     default_adapter = adapters.index(detection.adapter) if detection.adapter in adapters else 0
     adapter_index = _menu(
         stdscr,
-        "Framework / Adapter auswählen",
+        "Select framework / adapter",
         [f"{name}: {ADAPTER_LABELS[name]}" for name in adapters],
         selected=default_adapter,
     )
     adapter = adapters[adapter_index]
     stage_indices = _menu(
         stdscr,
-        "CI-Stages auswählen",
+        "Select CI stages",
         list(STAGES),
         multi=True,
         initial={STAGES.index(stage) for stage in detection.stages if stage in STAGES},
@@ -125,12 +125,12 @@ def _session(stdscr, detection: Detection) -> tuple[dict, bool]:
         raise HarnessError("At least one CI stage must be selected")
     profile = profile_from_detection(detection, adapter=adapter, stages=stages, kind=kind)
     issues = profile_issues(profile)
-    summary = f"Adapter: {adapter}; Zielbranch: {profile['target_branch']}; Stages: {', '.join(stages)}"
+    summary = f"Adapter: {adapter}; Target branch: {profile['target_branch']}; Stages: {', '.join(stages)}"
     if issues:
-        summary += " | Hinweise: " + " / ".join(issues)
+        summary += " | Notes: " + " / ".join(issues)
     if not _confirm(stdscr, summary):
         raise HarnessError("Setup cancelled by user")
-    run_now = _confirm(stdscr, "Profil gespeichert. Soll jetzt ein erster Gate-Lauf vorbereitet werden?")
+    run_now = _confirm(stdscr, "Profile saved. Prepare an initial gate run now?")
     return profile, run_now
 
 
@@ -143,7 +143,7 @@ def run_setup_tui(detection: Detection) -> tuple[dict, bool]:
 
 
 def format_detection(detection: Detection) -> str:
-    scripts = ", ".join(detection.available_scripts) or "keine"
-    files = ", ".join(detection.available_files) or "keine"
-    hints = "; ".join(getattr(detection, "hints", [])) or "keine"
+    scripts = ", ".join(detection.available_scripts) or "none"
+    files = ", ".join(detection.available_files) or "none"
+    hints = "; ".join(getattr(detection, "hints", [])) or "none"
     return f"Detected kind={detection.kind}, adapter={detection.adapter}, target={detection.target_branch}, scripts={scripts}, files={files}, hints={hints}"

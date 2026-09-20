@@ -1,6 +1,7 @@
 # Instructions for agents modifying THIS harness
 
-Read README.md, technical_doc.md, research.md and docs/VALIDATION.md first.
+Read README.md before making changes; consult the relevant source files and tests
+for the behavior being changed.
 This is a security-conscious local verification harness, not an OWASP certification
 product and not an adversarial-code sandbox.
 

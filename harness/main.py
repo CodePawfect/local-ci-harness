@@ -828,7 +828,7 @@ def check_backend_contract(snap: Snapshot) -> dict:
         raise HarnessError("No backend pom.xml")
     root = ET.parse(path).getroot()
     if root.find("{*}modules") is not None:
-        raise HarnessError("This first adapter supports a single Maven module. Multi-module needs aggregate test/coverage paths and a same-reactor Sonar invocation; see technical_doc.md")
+        raise HarnessError("This adapter supports a single Maven module. Multi-module Maven projects are not supported.")
     return {"pom": "pom.xml", "adapter": "single-module Maven"}
 
 

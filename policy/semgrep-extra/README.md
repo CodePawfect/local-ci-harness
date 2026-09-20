@@ -1,17 +1,18 @@
-# Weitere geprüfte Semgrep-Regeln
+# Additional Semgrep rules
 
-Hier können zusätzliche lokal exportierte Semgrep-Regeln als `*.yml` oder `*.yaml`
-versioniert werden. Der Runner lädt alle diese Dateien zusätzlich. Er lädt während
-normaler Scans KEINE veränderlichen Registry-Regeln nach. Alle Policy-Dateien gehen
-in den SHA-256 des Laufes ein.
+Additional locally reviewed Semgrep rules can be versioned here as `*.yml` or
+`*.yaml`. The runner loads these files in addition to `../semgrep.yml`; they are
+included in the run's policy hash. Normal scans do not fetch mutable registry
+rules. All policy files go through the same source and policy integrity checks.
 
-Die neun eigenen Regeln in `../semgrep.yml` sind nur eine kleine Ergänzung zu
-Sonars Java-/JS-/TS-Profilen, KEIN vollständiges OWASP-Top-10-Regelpaket. Ein
-geprüftes OWASP-/Java-/React-Regelpaket kann hier ergänzt werden. Quelle, Revision,
-Lizenz und Anpassungen dokumentieren und positive/negative Regeltests ergänzen.
-Bei Updates zuerst Fehlalarme und neue Blocker prüfen. Proprietäre/Pro-Regeln
-benötigen unter Umständen weitere Rechte oder eine andere Engine; der Runner
-verwendet ausdrücklich `--oss-only`.
+The nine project rules in `../semgrep.yml` are a small supplement to Sonar's
+Java/JS/TS profiles, not a complete OWASP Top 10 rule pack. Add a reviewed
+OWASP/Java/React rule pack only with documented source, revision, license, and
+positive/negative rule tests.
 
-ERROR blockiert, WARNING erscheint als WARN mit Fundstellen im JSON-Bericht.
-Syntax- und Parserfehler sowie null analysierte Dateien sind Fehler, nicht grün.
+Review false positives and new blockers before updates. Proprietary or Pro rules
+may require additional rights or a different engine; the runner explicitly uses
+`--oss-only`.
+
+`ERROR` blocks the run; `WARNING` is reported as `WARN` with findings in the JSON
+report. Syntax/parser errors and zero analyzed files are failures, not passes.

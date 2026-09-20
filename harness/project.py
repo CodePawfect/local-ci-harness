@@ -407,53 +407,51 @@ def render_agent_prompt(profile: dict[str, Any], repo: Path, harness_cli: Path,
     guidance = [*profile.get("notes", []), *profile_issues(profile)]
     guidance_block = ""
     if guidance:
-        guidance_block = "\nVor dem ersten Gate prüfen/erledigen:\n" + "\n".join(
+        guidance_block = "\nBefore the first gate, review/complete:\n" + "\n".join(
             f"- {item}" for item in guidance
         ) + "\n"
     sonar_block = ""
     if "sonar" in profile["stages"]:
         sonar_block = f"""
-Für den ersten Sonar-Lauf muss der lokale Server gestartet und das Profil
-provisioniert werden:
+For the first Sonar run, start the local server and provision the profile:
 
     {harness_cli} up
     {harness_cli} bootstrap --repo {repo}
 
-Bei einem frischen lokalen SonarQube rotiert der Bootstrap den Default-Login
-automatisch und legt das lokale Admin-Secret nur unter `.local/` mit Modus 0600 ab.
-Bei einer bereits angepassten Instanz wird ein vorhandenes Secret verwendet oder
-das Admin-Passwort interaktiv abgefragt. Danach darf das Gate den projektspezifischen
-Token verwenden. Für die Browseransicht zeigt `{harness_cli} sonar credentials`
-den lokalen Read-only-Login an; das Admin-Passwort darf dafür nicht weitergegeben
-werden.
+On a fresh local SonarQube instance, bootstrap rotates the default login
+automatically and stores the local admin secret under `.local/` with mode 0600.
+On an already configured instance, it uses the existing secret or prompts for
+the admin password. The gate then uses the project-scoped token. For browser
+access, `{harness_cli} sonar credentials` prints the local read-only login;
+do not share the admin password for browser access.
 """
-    return f"""# Local CI Merge-Gate für {project['name']}
+    return f"""# Local CI Merge Gate for {project['name']}
 
-Arbeite im Repository {repo}. Zielbranch ist {profile['target_branch']}.
-Verwende den Adapter {project['adapter']} und diese Stages: {stages}.
+Work in repository {repo}. The target branch is {profile['target_branch']}.
+Use adapter {project['adapter']} and these stages: {stages}.
 {guidance_block}
 {sonar_block}
 
-Wenn die Aufgabe ausdrücklich den Zustand „bereit zum Mergen nach {profile['target_branch']}"
-erreicht, führe aus:
+When the task explicitly reaches the state “ready to merge into {profile['target_branch']}”,
+run:
 
     {command}
 
-Lies anschließend ausschließlich den Report dieses Laufs. Der erwartete Report liegt unter:
+Afterwards, read only this run's report. The expected report is:
 {report}
 
-Regeln:
+Rules:
 
-- Prüfe gate.status, source_hash, config_hash, Branch und Run-ID.
-- Bei READY ist der aktuelle Arbeitsstand für den nächsten Merge-Schritt geprüft.
-- Bei REVIEW, FAIL oder BLOCKED ermittle die Ursache aus den strukturierten Reports und Logs.
-- Behebe reproduzierbare Codefehler auf dem aktuellen Branch und führe den Gate-Lauf erneut aus.
-- Verändere niemals Tests, Coverage-Schwellen, Scannerregeln, Exclusions oder Timeouts, nur um den Lauf grün zu machen.
-- Bei Secrets, Infrastrukturfehlern oder unklaren Security-Befunden stoppen und die Entscheidung melden.
-- Nach drei erfolglosen Reparaturversuchen derselben Ursache stoppen.
-- Nicht automatisch committen, pushen, mergen oder nach {profile['target_branch']} schreiben.
+- Check gate.status, source_hash, config_hash, branch, and run ID.
+- READY means the current working state has been checked for the next merge step.
+- For REVIEW, FAIL, or BLOCKED, determine the cause from structured reports and logs.
+- Fix reproducible code failures on the current branch and run the same gate again.
+- Never change tests, coverage thresholds, scanner rules, exclusions, or timeouts just to make the run pass.
+- Stop and report the decision for secrets, infrastructure failures, or unclear security findings.
+- Stop after three unsuccessful repair attempts for the same cause.
+- Do not commit, push, merge, or write to {profile['target_branch']} automatically.
 
-Ein Lauf auf {profile['target_branch']} vor einem Push verwendet stattdessen:
+A run on {profile['target_branch']} before a push uses instead:
 
     {harness_cli} gate --repo {repo} --intent push-main
 """

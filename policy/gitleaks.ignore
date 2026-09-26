@@ -1,0 +1,4 @@
+# Exact historical false positives reviewed on 2026-09-26.
+# Owner approval and evidence: docs/false-positive-findings.md.
+d86c93019d2c27b6c4a2db8d72e1eaa0fd01a9b1:docs/social-auth.md:generic-api-key:26
+6d776cf00cada9e46e1c09c02e7ae10af2917368:docs/superpowers/plans/2026-04-24-templates-feature.md:generic-api-key:143

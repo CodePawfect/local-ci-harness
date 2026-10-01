@@ -29,6 +29,7 @@ from project import (STAGES, branch_context, configured_command, detect_project,
                      profile_path, project_slug, repository_root, validate_profile,
                      write_agent_prompt, write_profile)
 from sonar import export_analysis, print_ui_credentials, provision, wait_ready
+from quality import load_quality_policy, project_quality_issues
 from tui import format_detection, run_setup_tui
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -386,6 +387,82 @@ def profile_maven_args(profile: dict) -> list[str]:
     return list(values or [])
 
 
+def _evidence_files(snap: Snapshot, relative: Path, *, junit: bool = False) -> list[Path]:
+    """Resolve generated output without following links or escaping the snapshot."""
+    path = snap.app / relative
+    for candidate in (path, *path.parents):
+        if candidate == snap.root.parent:
+            break
+        if candidate.is_symlink():
+            raise HarnessError(f"Symlink refused in evidence path: {relative}")
+    if not path.resolve().is_relative_to(snap.root.resolve()):
+        raise HarnessError(f"Evidence escapes snapshot: {relative}")
+    if not path.exists():
+        return []
+    if junit:
+        if not path.is_dir():
+            raise HarnessError(f"JUnit evidence must be a directory: {relative}")
+        files = sorted(path.glob("TEST-*.xml"))
+    else:
+        if not path.is_file():
+            raise HarnessError(f"Coverage evidence must be a file: {relative}")
+        files = [path]
+    if any(p.is_symlink() or not p.is_file() for p in files):
+        raise HarnessError(f"Unsafe generated evidence in {relative}")
+    return files
+
+
+def prepare_profile_evidence(profile: dict, snap: Snapshot, key: str) -> None:
+    """Discard previous output only in the disposable snapshot, before its producer."""
+    defaults = {"tests": "test-results", "integration": "target/failsafe-reports",
+                "e2e": "test-results", "coverage": "coverage/coverage-summary.json", "lcov": "coverage/lcov.info"}
+    adapter = profile.get("project", {}).get("adapter")
+    if adapter == "spring-maven":
+        defaults.update(tests="target/surefire-reports", coverage="target/site/jacoco/jacoco.xml")
+    keys = {"test": ["tests"], "integration": ["integration"], "e2e": ["e2e"],
+            "coverage": ["coverage", "lcov"]}.get(key, [])
+    if key in ("build", "coverage") and adapter == "spring-maven":
+        keys = ["tests", "integration", "coverage", "lcov"]
+    files = set()
+    for name in keys:
+        relative = evidence_path(profile, name, defaults[name])
+        if relative is not None:
+            files.update(_evidence_files(snap, relative, junit=name in ("tests", "integration", "e2e")))
+    for path in sorted(files):
+        path.unlink()
+
+
+def check_profile_evidence(r: Runner, profile: dict, snap: Snapshot, name: str, key: str,
+                           default: str, validator: Callable[[Path], dict], producer: str) -> bool:
+    path = profile_evidence(r, profile, snap, key, default)
+    if path is None:
+        return False
+
+    def validate_and_archive() -> dict:
+        if not any(step.name == producer and step.status in ("PASS", "WARN") for step in r.results):
+            raise HarnessError(f"Evidence has no successful producer in this run: {producer}")
+        relative = path.relative_to(snap.app)
+        files = _evidence_files(snap, relative, junit=key in ("tests", "integration", "e2e"))
+        detail = validator(path)
+        manifest = {"run_id": r.id, "producer": producer, "files": []}
+        for file in files:
+            rel = file.relative_to(snap.app)
+            destination = r.reports / "project/stages" / name / rel
+            for candidate in (destination, *destination.parents):
+                if candidate == r.reports.parent:
+                    break
+                if candidate.is_symlink():
+                    raise HarnessError(f"Symlink refused in evidence archive: {candidate}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file, destination)
+            manifest["files"].append({"path": rel.as_posix(), "sha256": file_sha256(destination),
+                                       "artifact": destination.relative_to(r.reports).as_posix()})
+        r.meta.setdefault("evidence", {})[name] = manifest
+        return dict(detail, provenance=manifest)
+
+    return r.check(name, validate_and_archive)
+
+
 def run_profile_command(r: Runner, profile: dict, snap: Snapshot, name: str, key: str,
                         default: list[str] | None = None, image_override: str | None = None,
                         command_override: list[str] | None = None,
@@ -394,6 +471,11 @@ def run_profile_command(r: Runner, profile: dict, snap: Snapshot, name: str, key
     command = list(command_override) if command_override is not None else _profile_command(profile, key, default)
     if not command:
         r.blocked(name, f"No command configured for stage command {key}")
+        return False
+    try:
+        prepare_profile_evidence(profile, snap, key)
+    except (HarnessError, OSError) as exc:
+        r.blocked(name + "-fresh-evidence", str(exc))
         return False
     program = command[0].lower()
     if key == "test" and profile.get("test_reporter") == "node-junit":
@@ -432,10 +514,10 @@ def run_profile_command(r: Runner, profile: dict, snap: Snapshot, name: str, key
     mounts: list[tuple[Path, str, bool]] = []
     if image in ("node", "playwright"):
         env["npm_config_cache"] = "/cache/npm"
-        mounts.append((cache("npm"), "/cache/npm", False))
+        mounts.append((cache("npm", r), "/cache/npm", False))
     elif image == "maven":
         env.update({"MAVEN_CONFIG": "/cache/maven", "SONAR_USER_HOME": "/cache/sonar"})
-        mounts.extend([(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)])
+        mounts.extend([(cache("maven", r), "/cache/maven", False), (cache("sonar", r), "/cache/sonar", False)])
     return r.docker(name, image, args, snap, entrypoint=entrypoint, network=NETWORK,
                     env=env, mounts=mounts)
 
@@ -509,7 +591,7 @@ def run_profile_e2e(r: Runner, profile: dict, snap: Snapshot) -> None:
         # output cleanup from deleting a unit-test JUnit report when both stages
         # intentionally use the common default test-results directory.
         e2e_artifacts = (e2e_directory / "e2e-artifacts").as_posix()
-        run_profile_command(
+        tested = run_profile_command(
             r,
             profile,
             snap,
@@ -523,9 +605,9 @@ def run_profile_e2e(r: Runner, profile: dict, snap: Snapshot) -> None:
                 "PLAYWRIGHT_HTML_OPEN": "never",
             },
         )
-        evidence = profile_evidence(r, profile, snap, "e2e", "test-results")
-        if evidence is not None:
-            r.check("project-e2e-evidence", lambda evidence=evidence: require_junit(evidence))
+        if tested:
+            check_profile_evidence(r, profile, snap, "project-e2e-evidence", "e2e", "test-results",
+                                   require_junit, "project-e2e-tests")
     except (HarnessError, OSError, ValueError, KeyError) as exc:
         r.blocked("project-e2e", str(exc))
 
@@ -593,7 +675,7 @@ def run_profile_sonar(r: Runner, profile: dict, snap: Snapshot, slug: str) -> No
         r.docker("project-sonar", "maven", ["-Dmaven.repo.local=/cache/maven/repository", "-B", "-ntp",
                                                *profile_maven_args(profile), *props, goal], snap, env=env,
                  network=NETWORK, entrypoint="mvn",
-                 mounts=[(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)],
+                 mounts=[(cache("maven", r), "/cache/maven", False), (cache("sonar", r), "/cache/sonar", False)],
                  memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     else:
         source_dir = profile.get("sonar_sources", "src")
@@ -602,7 +684,7 @@ def run_profile_sonar(r: Runner, profile: dict, snap: Snapshot, slug: str) -> No
                   f"-Dsonar.test.inclusions={test_inclusions}", f"-Dsonar.exclusions={test_inclusions}",
                   "-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"]
         r.docker("project-sonar", "sonar_scanner", props, snap, env=env, network=NETWORK,
-                 entrypoint="sonar-scanner", mounts=[(cache("sonar"), "/cache/sonar", False)],
+                 entrypoint="sonar-scanner", mounts=[(cache("sonar", r), "/cache/sonar", False)],
                  memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     r.check("project-sonar-evidence",
             lambda: export_analysis(ROOT, output, output / "report-task.txt", sonar_key, sonar_url()))
@@ -649,6 +731,15 @@ def _gate_exit_code(r: Runner, status: str, runner_exit: int) -> int:
     return 0 if status == "READY" else max(1, runner_exit)
 
 
+def finish_profile_gate(r: Runner, profile: dict) -> int:
+    r.meta["gate"] = {
+        "status": _gate_status(r), "target_branch": profile["target_branch"],
+        "source_hash": r.meta.get("source_hash"), "config_hash": r.meta["profile_sha256"],
+        "policy_hash": r.meta["policy_sha256"],
+    }
+    return _gate_exit_code(r, r.meta["gate"]["status"], r.finish())
+
+
 def sonar_prerequisites(r: Runner) -> dict[str, str]:
     blocking = [item.name for item in r.results if item.status in ("FAIL", "ERROR", "BLOCKED")]
     if blocking:
@@ -672,7 +763,22 @@ def run_profile_pipeline(config: dict, profile: dict, repo: Path, intent: str,
         "policy_sha256": policy_hash(),
     }
     r = Runner(ROOT, config, "gate", slug, namespace=slug, metadata=metadata)
-    snap = snapshot(repo, r.work / "project", profile["project"]["subdir"], history=True)
+    try:
+        quality = load_quality_policy(ROOT)
+        r.meta["quality_policy"] = quality
+        issues = project_quality_issues(profile, quality, repo / safe_relative(profile["project"]["subdir"]))
+    except (HarnessError, OSError, KeyError) as exc:
+        issues = [str(exc)]
+    if issues:
+        r.blocked("project-quality-policy", "; ".join(issues))
+        return finish_profile_gate(r, profile)
+    r.check("project-quality-policy", lambda: {"required_stages": quality["required_stages"],
+                                               "coverage_min": quality["coverage_min"]})
+    try:
+        snap = snapshot(repo, r.work / "project", profile["project"]["subdir"], history=True)
+    except (HarnessError, OSError) as exc:
+        r.blocked("project-snapshot", str(exc))
+        return finish_profile_gate(r, profile)
     r.meta["snapshots"]["project"] = {
         "source": str(snap.source),
         "commit": snap.commit,
@@ -681,7 +787,21 @@ def run_profile_pipeline(config: dict, profile: dict, repo: Path, intent: str,
         "subdir": profile["project"]["subdir"],
     }
     r.meta["source_hash"] = snap.source_hash
+    r.meta["dependency_manifests"] = {
+        rel.as_posix(): file_sha256(snap.root / rel) for rel in snap.files
+        if rel.name in {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "pom.xml",
+                        "requirements.txt", "pyproject.toml", "poetry.lock", "go.mod", "go.sum", "Cargo.lock"}
+    }
     r.flush()
+    def runtime_ready() -> dict:
+        try:
+            ensure_docker(config)
+            ensure_network()
+        except HarnessError as exc:
+            raise InfrastructureError(str(exc)) from exc
+        return {"runtime": "available"}
+    if not r.check("project-container-runtime", runtime_ready):
+        return finish_profile_gate(r, profile)
     adapter = profile["project"]["adapter"]
     stages = profile["stages"]
     runtime_stages = {"lint-typecheck", "tests", "coverage", "build", "e2e", "sonar"}
@@ -705,14 +825,14 @@ def run_profile_pipeline(config: dict, profile: dict, repo: Path, intent: str,
         run_profile_command(r, profile, snap, "project-typecheck", "typecheck")
     if "tests" in stages:
         test_ok = run_profile_command(r, profile, snap, "project-tests", "test")
-        evidence = profile_evidence(r, profile, snap, "tests", "test-results")
-        if test_ok and evidence is not None:
-            r.check("project-tests-evidence", lambda evidence=evidence: require_junit(evidence))
+        if test_ok:
+            check_profile_evidence(r, profile, snap, "project-tests-evidence", "tests", "test-results",
+                                   require_junit, "project-tests")
     if "integration" in stages:
         integration_ok = run_profile_command(r, profile, snap, "project-integration", "integration")
-        evidence = profile_evidence(r, profile, snap, "integration")
-        if integration_ok and evidence is not None:
-            r.check("project-integration-evidence", lambda evidence=evidence: require_junit(evidence))
+        if integration_ok:
+            check_profile_evidence(r, profile, snap, "project-integration-evidence", "integration",
+                                   "target/failsafe-reports", require_junit, "project-integration")
     build_ok = True
     if "build" in stages:
         build_ok = run_profile_command(r, profile, snap, "project-build", "build")
@@ -728,20 +848,12 @@ def run_profile_pipeline(config: dict, profile: dict, repo: Path, intent: str,
             maven_verified = maven_verified or coverage_command_ok
         else:
             coverage_command_ok = run_profile_command(r, profile, snap, "project-coverage-command", "coverage")
-        coverage_file = profile_evidence(
-            r,
-            profile,
-            snap,
-            "coverage",
-            "target/site/jacoco/jacoco.xml" if adapter == "spring-maven" else "coverage/coverage-summary.json",
-        ) if coverage_command_ok else None
-        if coverage_command_ok and coverage_file is not None:
-            if adapter == "spring-maven":
-                r.check("project-coverage", lambda coverage_file=coverage_file: jacoco_coverage(
-                    coverage_file, profile["thresholds"]["lines"], profile["thresholds"]["branches"]))
-            else:
-                r.check("project-coverage", lambda coverage_file=coverage_file: frontend_coverage(
-                    coverage_file, profile["thresholds"]["lines"], profile["thresholds"]["branches"]))
+        if coverage_command_ok:
+            validator = jacoco_coverage if adapter == "spring-maven" else frontend_coverage
+            check_profile_evidence(r, profile, snap, "project-coverage", "coverage",
+                                   "target/site/jacoco/jacoco.xml" if adapter == "spring-maven" else "coverage/coverage-summary.json",
+                                   lambda path: validator(path, profile["thresholds"]["lines"], profile["thresholds"]["branches"]),
+                                   "project-build" if adapter == "spring-maven" and build_ok and "build" in stages else "project-coverage-command")
         if "sonar" in stages and adapter in {"next-npm", "next-fullstack"}:
             lcov = profile_evidence(r, profile, snap, "lcov", "coverage/lcov.info")
             if lcov is None:
@@ -750,9 +862,9 @@ def run_profile_pipeline(config: dict, profile: dict, repo: Path, intent: str,
         if not maven_verified:
             r.blocked("project-integration-evidence", "Spring integration evidence requires a successful Maven verify/build stage")
         else:
-            integration = profile_evidence(r, profile, snap, "integration", "target/failsafe-reports")
-            if integration is not None:
-                r.check("project-integration-evidence", lambda integration=integration: require_junit(integration))
+            producer = "project-build" if build_ok and "build" in stages else "project-coverage-command"
+            check_profile_evidence(r, profile, snap, "project-integration-evidence", "integration",
+                                   "target/failsafe-reports", require_junit, producer)
     if adapter == "spring-maven" and "dependencies" in stages:
         if maven_verified:
             run_profile_spring_dependencies(r, profile, snap, slug)
@@ -772,17 +884,11 @@ def run_profile_pipeline(config: dict, profile: dict, repo: Path, intent: str,
                 run_profile_sonar(r, profile, snap, slug)
     r.check("project-artifacts", lambda: copy_profile_evidence(r, profile, snap))
     r.check("project-source-unchanged", lambda: verify_unchanged(snap))
+    r.check("project-branch-unchanged", lambda: _require_equal(context,
+            branch_context(repo, profile["target_branch"], intent), "Source or target branch changed during the run"))
     r.check("policy-unchanged", lambda: _require_equal(metadata["policy_sha256"], policy_hash(),
                                                        "Harness policy changed during the run"))
-    r.meta["gate"] = {
-        "status": _gate_status(r),
-        "target_branch": profile["target_branch"],
-        "source_hash": snap.source_hash,
-        "config_hash": metadata["profile_sha256"],
-        "policy_hash": metadata["policy_sha256"],
-    }
-    exit_code = r.finish()
-    return _gate_exit_code(r, r.meta["gate"]["status"], exit_code)
+    return finish_profile_gate(r, profile)
 
 
 def prepare(runner: Runner, target: str, full: bool) -> Snapshot:
@@ -795,8 +901,9 @@ def prepare(runner: Runner, target: str, full: bool) -> Snapshot:
     return snap
 
 
-def cache(name: str) -> Path:
-    path = ROOT / ".local" / "cache" / name
+def cache(name: str, runner: Runner) -> Path:
+    """Caches belong to one run; jobs cannot alter another project's inputs."""
+    path = runner.work / "cache" / name
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -811,14 +918,14 @@ def maven(r: Runner, name: str, snap: Snapshot, goals: list[str], extra_env: dic
     if with_project_args:
         args += project.get("maven_args", [])
     return r.docker(name, "maven", args + goals, snap, entrypoint="mvn", network=NETWORK, env=env,
-                    mounts=[(cache("maven"), "/cache/maven", False), (cache("sonar"), "/cache/sonar", False)],
+                    mounts=[(cache("maven", r), "/cache/maven", False), (cache("sonar", r), "/cache/sonar", False)],
                     memory=memory)
 
 
 def node(r: Runner, name: str, snap: Snapshot, args: list[str], image: str = "node") -> bool:
     env = dict(r.config["projects"]["frontend"].get("environment", {}), npm_config_cache="/cache/npm")
     return r.docker(name, image, args, snap, entrypoint="npm", network=NETWORK, env=env,
-                    mounts=[(cache("npm"), "/cache/npm", False)])
+                    mounts=[(cache("npm", r), "/cache/npm", False)])
 
 
 def check_backend_contract(snap: Snapshot) -> dict:
@@ -850,7 +957,11 @@ def check_frontend_contract(snap: Snapshot, full: bool) -> dict:
     return {"required_scripts": sorted(expected), "package_manager": "npm"}
 
 
-def redact_and_check_gitleaks(path: Path) -> dict:
+_ANSI_ESCAPE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])")
+
+
+def redact_and_check_gitleaks(path: Path, *, history_log: Path | None = None,
+                              scan_succeeded: bool = True) -> dict:
     findings = read_json(path)
     if not isinstance(findings, list):
         raise HarnessError("Invalid Gitleaks report")
@@ -859,9 +970,34 @@ def redact_and_check_gitleaks(path: Path) -> dict:
             if key in item:
                 item[key] = "[REDACTED]"
     write_json(path, findings)
+
+    scanned_commits = None
+    if history_log is not None:
+        if not history_log.is_file():
+            raise HarnessError("Gitleaks history scan log is missing")
+        try:
+            log = history_log.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise HarnessError(f"Cannot read Gitleaks history scan log: {exc}") from exc
+        log = _ANSI_ESCAPE.sub("", log)
+        history_log.write_text(log, encoding="utf-8")
+        if re.search(r"\b(?:ERR(?:O|OR)?|FATAL|FTL)\b", log, re.IGNORECASE):
+            raise HarnessError("Gitleaks history scan log contains an error")
+        counts = {int(match) for match in re.findall(r"\b(\d+)\s+commits?\s+scanned\b", log, re.IGNORECASE)}
+        if len(counts) != 1:
+            raise HarnessError("Gitleaks history scan did not report an unambiguous commit count")
+        scanned_commits = counts.pop()
+        if scanned_commits <= 0:
+            raise HarnessError("Gitleaks history scan checked zero commits")
+
     if findings:
         raise HarnessError(f"Gitleaks found {len(findings)} potential secrets. Values redacted; rotate real exposed credentials")
-    return {"findings": 0}
+    if history_log is not None and not scan_succeeded:
+        raise HarnessError("Gitleaks history scan did not complete successfully")
+    result = {"findings": 0}
+    if scanned_commits is not None:
+        result["scanned_commits"] = scanned_commits
+    return result
 
 
 def secret_scans(r: Runner, target: str, snap: Snapshot, full: bool) -> None:
@@ -876,8 +1012,18 @@ def secret_scans(r: Runner, target: str, snap: Snapshot, full: bool) -> None:
                 "--report-format", "json", "--report-path", f"/reports/{name}.json", "--exit-code", "1"]
         if mode == "git":
             args += ["--log-opts=--all"]
-        r.docker(name, "gitleaks", args, snap, readonly_source=True, network="none")
-        r.check(name + "-evidence", lambda name=name: redact_and_check_gitleaks(r.reports / f"{name}.json"))
+        history_env = ({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
+                        "GIT_CONFIG_VALUE_0": "/workspace"} if mode == "git" else None)
+        docker_options = {"readonly_source": True, "network": "none"}
+        if history_env is not None:
+            docker_options["env"] = history_env
+        scan_succeeded = r.docker(name, "gitleaks", args, snap, **docker_options)
+        r.check(name + "-evidence", lambda name=name, mode=mode, scan_succeeded=scan_succeeded:
+                redact_and_check_gitleaks(
+                    r.reports / f"{name}.json",
+                    history_log=r.reports / f"{name}.log" if mode == "git" else None,
+                    scan_succeeded=scan_succeeded,
+                ))
 
 
 def sast(r: Runner, target: str, snap: Snapshot) -> None:
@@ -912,7 +1058,7 @@ def trivy(r: Runner, target: str, snap: Snapshot, sbom: bool = False, iac: bool 
     app = "/workspace/" + snap.app.relative_to(snap.root).as_posix()
     args += [app + "/target/bom.json" if sbom else app]
     r.docker(name, "trivy", args, snap, readonly_source=True,
-             mounts=[(cache("trivy"), "/cache/trivy", False)])
+             mounts=[(cache("trivy", r), "/cache/trivy", False)])
     r.check(name + "-evidence", lambda: validate_trivy(r.reports / f"{name}.json", need_packages=not iac))
 
 
@@ -964,7 +1110,7 @@ def sonar_analysis(r: Runner, target: str, snap: Snapshot) -> None:
                   f"-Dsonar.test.inclusions={tests}", f"-Dsonar.exclusions={tests}",
                   "-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"]
         r.docker("frontend-sonar", "sonar_scanner", props, snap, env=env, network=NETWORK,
-                 entrypoint="sonar-scanner", mounts=[(cache("sonar"), "/cache/sonar", False)],
+                 entrypoint="sonar-scanner", mounts=[(cache("sonar", r), "/cache/sonar", False)],
                  memory=configured_memory(r.config, "sonar_container_memory", DEFAULT_SONAR_CONTAINER_MEMORY))
     r.check(f"{target}-sonar-evidence", lambda: export_analysis(ROOT, output, output / "report-task.txt",
                                                               project["sonar_key"], sonar_url()))
@@ -1197,8 +1343,6 @@ def gate_project(repo_arg: str, intent: str) -> int:
     repo = repository_root(repo_arg)
     profile, _ = load_profile(repo)
     config = load_install_config()
-    ensure_docker(config)
-    ensure_network()
     sonar_lifecycle = "sonar" in profile["stages"]
     sonar_started = False
 

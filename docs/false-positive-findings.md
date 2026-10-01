@@ -33,3 +33,31 @@ including the unchanged current-tree and 272-commit history scans. All 519 proje
 tests passed; changed-code coverage was 80.9% against the existing 80% minimum.
 Sonar analysis `83335f80-9257-47a8-a213-b7ab46f41dfe` returned quality gate OK.
 The prior failed run remains failed; the exceptions alone are not gate approval.
+
+## PhysioPose analytics LocalStorage name — 30 September 2026
+
+Gate `20260930T202041-7d9df307` at application commit
+`74fdd58c1a01410252160630f1b798ae08a389d4` reported the literal
+`physiopose-ga4-consent` as `generic-api-key`. The source uses it solely to
+read a browser LocalStorage consent choice; it is not an authentication token,
+credential, or access grant. The historical blob was inspected with `git show`
+and contains the identical public storage name.
+
+Exact immutable history fingerprints added to `policy/gitleaks.ignore`:
+
+- `74fdd58c1a01410252160630f1b798ae08a389d4:src/ga4Runtime.ts:generic-api-key:3`
+- `c1acb3df1b8a59f726f11b2f2c778910ddf9f356:src/ga4.ts:generic-api-key:4`
+
+For directory scans, `policy/gitleaks.toml` requires both the exact source path
+`src/ga4Runtime.ts` and the complete captured literal `physiopose-ga4-consent`,
+scoped to `generic-api-key`. A changed value at the same path remains detectable.
+There is no whole-file or whole-rule exclusion. This uses the existing owner's
+bounded authorization for conclusively verified false positives. The original
+failed gate remains failed. Fresh scan/gate evidence will be recorded below.
+
+Validation: 100 harness unit tests passed. The pinned scanner accepted the exact
+public literal and blocked a changed synthetic credential-like value at the same
+path. Full gate `20260930T203657-fd5057d0` at `4f47a4f81ce508108441dbf28f4801822aa70820`
+ended READY: both fresh secret scans passed, 82.6% changed-code coverage met the
+existing 80% minimum, and Sonar analysis `99c36a7d-2588-40ae-937f-50d90ff1b5c2`
+returned quality gate OK with zero new security/reliability findings.

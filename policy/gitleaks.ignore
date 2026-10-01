@@ -2,3 +2,5 @@
 # Owner approval and evidence: docs/false-positive-findings.md.
 d86c93019d2c27b6c4a2db8d72e1eaa0fd01a9b1:docs/social-auth.md:generic-api-key:26
 6d776cf00cada9e46e1c09c02e7ae10af2917368:docs/superpowers/plans/2026-04-24-templates-feature.md:generic-api-key:143
+74fdd58c1a01410252160630f1b798ae08a389d4:src/ga4Runtime.ts:generic-api-key:3
+c1acb3df1b8a59f726f11b2f2c778910ddf9f356:src/ga4.ts:generic-api-key:4

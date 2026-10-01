@@ -131,6 +131,7 @@ def branch_context(repo: Path, target_branch: str, intent: str) -> dict[str, Any
         "target_branch": target_branch,
         "target_ref": target_ref,
         "head_commit": git(repo, "rev-parse", "HEAD"),
+        "target_commit": git(repo, "rev-parse", target_ref),
         "merge_base": merge_base,
         "intent": intent,
     }
@@ -288,6 +289,8 @@ def _validate_command(key: str, command: Any) -> None:
         raise HarnessError(f"commands.{key} contains a NUL byte")
     if command[0].lower() in SHELL_PROGRAMS or any(item in ("-c", "-lc", "/c") for item in command):
         raise HarnessError(f"commands.{key} may not invoke a shell; use explicit argv tokens")
+    if key == "install" and command[0].lower() == "npm" and command[1:2] != ["ci"]:
+        raise HarnessError("npm installation must use npm ci with a committed lockfile")
 
 
 def validate_profile(profile: dict[str, Any], repo: Path | None = None) -> dict[str, Any]:
@@ -349,7 +352,7 @@ def validate_profile(profile: dict[str, Any], repo: Path | None = None) -> dict[
         raise HarnessError("thresholds must be an object")
     for key in ("lines", "branches"):
         value = thresholds.get(key, 0)
-        if not isinstance(value, (int, float)) or not 0 <= value <= 100:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
             raise HarnessError(f"thresholds.{key} must be between 0 and 100")
     environment = profile.get("environment", {})
     if not isinstance(environment, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in environment.items()):

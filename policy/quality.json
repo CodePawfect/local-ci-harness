@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "required_stages": ["secrets", "static-analysis", "tests", "coverage", "build"],
+  "adapter_required_stages": {
+    "next-npm": ["dependencies", "lint-typecheck"],
+    "next-fullstack": ["dependencies", "lint-typecheck"],
+    "spring-maven": ["dependencies"],
+    "generic": [],
+    "custom": []
+  },
+  "coverage_min": {"lines": 70, "branches": 60},
+  "execution_environment": {
+    "TZ": "UTC",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PYTHONHASHSEED": "0"
+  }
+}

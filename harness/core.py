@@ -27,6 +27,8 @@ class InfrastructureError(HarnessError):
 DEFAULT_CONTAINER_MEMORY = "4g"
 DEFAULT_SONAR_CONTAINER_MEMORY = "6g"
 DEFAULT_SONAR_MIN_RUNTIME_MEMORY = "8g"
+DEFAULT_EXECUTION_ENV = {"TZ": "UTC", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONHASHSEED": "0"}
+SOURCE_HASH_SCHEMA = "tree-sha256-v2"
 
 _MEMORY_UNITS = {
     "b": 1,
@@ -150,15 +152,27 @@ def source_files(root: Path) -> list[Path]:
 
 def tree_hash(root: Path, files: list[Path]) -> str:
     digest = hashlib.sha256()
+    digest.update(SOURCE_HASH_SCHEMA.encode() + b"\0")
     for rel in sorted(files):
         p = root / rel
         digest.update(str(rel).encode("utf-8", "surrogateescape") + b"\0")
         if p.is_symlink():
-            digest.update(b"symlink\0" + os.readlink(p).encode())
+            digest.update(b"symlink\0" + hashlib.sha256(os.fsencode(os.readlink(p))).digest())
         else:
-            digest.update(p.read_bytes())
+            executable = b"1" if p.stat().st_mode & 0o111 else b"0"
+            digest.update(b"file\0" + executable + b"\0" + hashlib.sha256(p.read_bytes()).digest())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def directory_fingerprint(root: Path) -> dict[str, Any]:
+    files = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise HarnessError(f"Symlink refused in runtime inputs: {path}")
+        if path.is_file():
+            files.append(path.relative_to(root))
+    return {"files": len(files), "sha256": tree_hash(root, files)}
 
 
 @dataclasses.dataclass
@@ -205,23 +219,58 @@ def verify_unchanged(snap: Snapshot) -> None:
     files = source_files(snap.source)
     if files != snap.files or tree_hash(snap.source, files) != snap.source_hash:
         raise HarnessError("Working tree changed after the snapshot. This result does not verify the current source")
+    if git(snap.source, "rev-parse", "HEAD") != snap.commit:
+        raise HarnessError("HEAD changed after the snapshot. Git history and analysis context are no longer current")
 
 
-def require_junit(directory: Path) -> dict[str, int]:
+def require_junit(directory: Path) -> dict[str, Any]:
     paths = sorted(directory.glob("TEST-*.xml"))
     if not paths:
         raise HarnessError(f"No JUnit XML reports in {directory}. Tests may be absent or skipped")
     result = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+
+    def count_suite(suite: ET.Element, path: Path) -> dict[str, int]:
+        if suite.tag not in ("testsuite", "testsuites"):
+            raise HarnessError(f"Unsupported JUnit root/container {suite.tag} in {path}")
+        derived = dict.fromkeys(result, 0)
+        children = False
+        for child in suite:
+            if child.tag == "testcase":
+                children = True
+                derived["tests"] += 1
+                for tag, key in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped")):
+                    derived[key] += int(child.find(tag) is not None)
+            elif child.tag in ("testsuite", "testsuites"):
+                children = True
+                nested = count_suite(child, path)
+                for key in derived:
+                    derived[key] += nested[key]
+        counts = {}
+        for key in result:
+            claimed = suite.attrib.get(key)
+            value = int(claimed) if claimed is not None else derived[key]
+            if value < 0:
+                raise HarnessError(f"Negative JUnit {key} count in {path}")
+            if children and claimed is not None and value != derived[key]:
+                raise HarnessError(f"JUnit {key} total disagrees with child evidence in {path}")
+            counts[key] = value
+        if counts["skipped"] > counts["tests"]:
+            raise HarnessError(f"JUnit skipped count exceeds tests in {path}")
+        return counts
+
     for path in paths:
+        if path.is_symlink():
+            raise HarnessError(f"Symlink refused in JUnit evidence: {path}")
         root = ET.parse(path).getroot()
-        suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
-        for suite in suites:
-            for key in result:
-                result[key] += int(suite.attrib.get(key, "0"))
+        counts = count_suite(root, path)
+        for key in result:
+            result[key] += counts[key]
     if result["tests"] - result["skipped"] <= 0:
         raise HarnessError(f"No executed tests in {directory}")
     if result["failures"] or result["errors"]:
         raise HarnessError(f"JUnit reports contain failures/errors: {result}")
+    if result["skipped"]:
+        result["_status"] = "WARN"
     return result
 
 
@@ -238,7 +287,10 @@ def jacoco_coverage(path: Path, line_min: float, branch_min: float) -> dict[str,
             values[key] = None
             continue
         covered = int(counter.attrib["covered"])
-        total = covered + int(counter.attrib["missed"])
+        missed = int(counter.attrib["missed"])
+        if covered < 0 or missed < 0:
+            raise HarnessError(f"Negative JaCoCo {typ} coverage counters")
+        total = covered + missed
         if total == 0:
             if typ == "LINE":
                 raise HarnessError("JaCoCo report has zero executable source lines")
@@ -260,7 +312,7 @@ def frontend_coverage(path: Path, line_min: float, branch_min: float) -> dict[st
         if not isinstance(item, dict) or "total" not in item or "covered" not in item:
             raise HarnessError(f"Malformed coverage-summary.json: missing {key}")
         n, covered = item["total"], item["covered"]
-        if not isinstance(n, (int, float)) or not isinstance(covered, (int, float)) or n < 0 or not 0 <= covered <= n:
+        if type(n) is not int or type(covered) is not int or n < 0 or not 0 <= covered <= n:
             raise HarnessError(f"Invalid {key} coverage counters")
         if n == 0:
             if key == "lines":
@@ -336,7 +388,9 @@ class Runner:
         self.reports.mkdir(parents=True)
         self.results: list[Result] = []
         self.meta: dict[str, Any] = {"run_id": self.id, "mode": mode, "target": target,
-                                    "snapshots": {}, "warning": "No complete OWASP or production security certification"}
+                                    "snapshots": {}, "source_hash_schema": SOURCE_HASH_SCHEMA,
+                                    "execution": {"environment": dict(DEFAULT_EXECUTION_ENV), "containers": []},
+                                    "warning": "No complete OWASP or production security certification"}
         if metadata:
             self.meta.update(metadata)
         self.lock = read_json(root / "images.lock.json")
@@ -404,7 +458,11 @@ class Runner:
         merged_env = {"HOME": "/tmp", "CI": "true", "NEXT_TELEMETRY_DISABLED": "1", "SEMGREP_SEND_METRICS": "off",
                       "SEMGREP_ENABLE_VERSION_CHECK": "0", "TRIVY_DISABLE_TELEMETRY": "true"}
         if env:
+            for key, value in DEFAULT_EXECUTION_ENV.items():
+                if key in env and env[key] != value:
+                    raise HarnessError(f"Job environment cannot override central {key}={value}")
             merged_env.update(env)
+        merged_env.update(DEFAULT_EXECUTION_ENV)
         child_env = dict(os.environ)
         child_env.update(merged_env)
         # Values (including tokens) are passed through the process environment, not argv.
@@ -424,7 +482,17 @@ class Runner:
             command += ["--mount", f"type=bind,src={host.resolve()},dst={target}" + (",readonly" if ro else "")]
         if entrypoint:
             command += ["--entrypoint", entrypoint]
-        command += [self.image(image), *args]
+        image_digest = self.image(image)
+        pin = self.lock["images"][image]
+        architecture, operating_system = pin.get("architecture"), pin.get("os")
+        if architecture not in ("arm64", "amd64") or operating_system != "linux":
+            raise HarnessError(f"Missing or unsupported locked platform for {image}; review and lock images again")
+        image_platform = f"{operating_system}/{architecture}"
+        command += ["--platform", image_platform, image_digest, *args]
+        cache_bindings = [(host, target) for host, target, _ in bindings if target.startswith("/cache/")]
+        execution = {"step": name, "image": image_digest, "platform": image_platform, "network": network,
+                     "cache_before": {target: directory_fingerprint(host) for host, target in cache_bindings}}
+        self.meta["execution"]["containers"].append(execution)
         print(f"\n>>> {name} (log: {logfile.relative_to(self.root)})", flush=True)
         code, status, detail = None, "ERROR", None
         proc = None
@@ -451,6 +519,10 @@ class Runner:
                 proc.terminate()
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=10)
+        try:
+            execution["cache_after"] = {target: directory_fingerprint(host) for host, target in cache_bindings}
+        except (HarnessError, OSError) as exc:
+            status, detail = "ERROR", f"Cannot fingerprint runtime inputs: {exc}"
         # Defense in depth: redact only known credentials; arbitrary app logs can still
         # contain sensitive data. Reports must never be published without review.
         if logfile.exists():

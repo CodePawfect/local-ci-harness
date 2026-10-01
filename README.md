@@ -36,8 +36,25 @@ Typical stages are:
 `install → secrets → static analysis → dependencies/IaC → lint/typecheck →
 unit/integration tests → build → coverage → E2E → Sonar → evidence`
 
-The order is profile-driven. E2E and Sonar are optional. A selected stage without
-a safe command or verifiable evidence is `BLOCKED`, never silently skipped.
+The profile selects checks, and the runner executes them in dependency order.
+E2E and Sonar are optional. A selected stage without a safe command or verifiable
+evidence is `BLOCKED`, never silently skipped.
+
+Every merge/push gate must include `secrets`, `static-analysis`, `tests`, `coverage`
+and `build`. Next.js also requires dependency scanning, linting and typechecking;
+Maven requires dependency scanning. Other adapters require dependency scanning
+when the application has a dependency manifest. These requirements and the
+coverage floors (70% lines, 60% branches) live in `policy/quality.json`, outside
+the application. Project thresholds may be higher, never lower. A baseline or
+incomplete setup profile cannot produce `READY`; complete its commands, stages
+and evidence first. Changes to central requirements require owner review.
+
+JUnit reports with partially skipped tests produce `WARN` and a `REVIEW` gate;
+zero executed tests fail. Before each test/coverage producer, old report files
+are removed from the disposable snapshot, including custom evidence paths.
+The original repository is untouched. Validated reports are archived per stage
+with their producer, run ID and SHA-256, so a later stage sharing an output
+directory cannot replace an earlier stage's proof.
 
 ## 2. Requirements
 
@@ -170,3 +187,48 @@ Selected stages without a command or machine-readable evidence become
 
 Project profiles cannot override central image pins, security policies, scanner
 rules, thresholds or gates. Job containers do not receive the host Docker socket.
+
+## 8. Reproducibility and harness verification
+
+Jobs explicitly use the OS/architecture recorded with each locked image. The
+source hash includes file paths, contents, symlink targets and executable bits;
+reports identify the hash format as `tree-sha256-v2`. A change to source HEAD,
+the current branch or the target commit during a gate invalidates the result.
+
+Jobs use `TZ=UTC`, `LANG=C.UTF-8`, `LC_ALL=C.UTF-8` and `PYTHONHASHSEED=0`.
+Profiles cannot override these values. Application tests must still control
+their own clocks and random-number generators; Python's hash seed does not seed
+application randomness. npm installations must use `npm ci`.
+
+Writable npm, Maven, Sonar and Trivy caches are isolated by run. Reports record
+dependency-manifest checksums and the cache checksums before and after each job,
+alongside image digests, platforms and network modes. This makes changes in
+external inputs visible and prevents cross-project cache writes. Cold caches
+require downloads and may increase runtime and disk usage. This is **not a
+hermetic replay guarantee**: registries, scanner databases, network services and
+live Sonar policy can still change between runs. `merge-to-main` checks the
+feature working tree and records the target commit; it does not yet build a
+synthetic merged tree.
+
+Run the host regression suite after every harness change:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Run the explicit Docker integration suite separately:
+
+```bash
+python3 tests/verify_integration.py
+```
+
+It uses the existing image lock and central scanner policy, without installing
+tools or mocking container jobs. The custom Node fixture runs real Node tests
+and native coverage. It checks a passing gate, an unchanged repeat, rejected
+stale JUnit evidence, a visible partial skip, a caught code mutation and an
+incomplete profile. Infrastructure failures fail the suite; they are never
+skipped. Evidence is retained in `.local/integration/<session>/verification.json`
+and the corresponding `reports/<project>/<run>/` directories. These cases do
+not verify Next.js, Maven, browser E2E or Sonar integration. The original delivery
+has not been Docker-integration-tested; new evidence is limited to the specific
+cases actually executed.

@@ -6,3 +6,11 @@ useDefault = true
 [[allowlists]]
 description = "Git internals are scanned separately with gitleaks git"
 paths = ['''(^|/)\.git/''']
+
+[[allowlists]]
+description = "Verified PhysioPose legacy LocalStorage name; exact literal only"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ['''(^|/)src/ga4Runtime\.ts$''']
+regexes = ['''^physiopose-ga4-consent$''']

@@ -108,6 +108,20 @@ class SnapshotTests(TempCase):
         with self.assertRaises(HarnessError):
             verify_unchanged(snap)
 
+    def test_executable_mode_mutation_detected(self):
+        script = self.file("source/check.sh", "exit 0\n")
+        script.chmod(0o644)
+        snap = self.snap()
+        script.chmod(0o755)
+        with self.assertRaises(HarnessError):
+            verify_unchanged(snap)
+
+    def test_head_change_with_identical_files_is_detected(self):
+        snap = self.snap()
+        git(self.repo, "commit", "--allow-empty", "-qm", "new history")
+        with self.assertRaisesRegex(HarnessError, "HEAD changed"):
+            verify_unchanged(snap)
+
     def test_unchanged_source_accepted(self):
         verify_unchanged(self.snap())
 
@@ -148,6 +162,14 @@ class EvidenceTests(TempCase):
         with self.assertRaises(HarnessError):
             require_junit(self.junit(skipped=3))
 
+    def test_junit_partial_skips_require_review(self):
+        evidence = require_junit(self.junit(tests=3, skipped=1))
+        self.assertEqual(evidence["_status"], "WARN")
+
+    def test_junit_negative_counts_fail(self):
+        with self.assertRaises(HarnessError):
+            require_junit(self.junit(tests=3, skipped=-1))
+
     def test_junit_failure_fails(self):
         with self.assertRaises(HarnessError):
             require_junit(self.junit(failures=1))
@@ -159,6 +181,19 @@ class EvidenceTests(TempCase):
     def test_junit_wrapped_suites_counted(self):
         self.file("TEST-root.xml", '<testsuites><testsuite tests="2"/><testsuite tests="4"/></testsuites>')
         self.assertEqual(require_junit(self.root)["tests"], 6)
+
+    def test_native_node_junit_direct_testcases_are_counted(self):
+        self.file("TEST-node.xml", '<testsuites><testcase name="positive"/><testcase name="negative"/><testcase name="zero"/></testsuites>')
+        self.assertEqual(require_junit(self.root), {"tests": 3, "failures": 0, "errors": 0, "skipped": 0})
+
+    def test_testcase_failures_cannot_hide_behind_clean_suite_totals(self):
+        self.file("TEST-inconsistent.xml", '<testsuite tests="1" failures="0"><testcase name="broken"><failure>failed</failure></testcase></testsuite>')
+        with self.assertRaises(HarnessError):
+            require_junit(self.root)
+
+    def test_nested_suites_are_not_double_counted(self):
+        self.file("TEST-nested.xml", '<testsuites tests="2"><testsuite tests="2"><testsuite tests="1"><testcase name="one"/></testsuite><testcase name="two"/></testsuite></testsuites>')
+        self.assertEqual(require_junit(self.root)["tests"], 2)
 
     def test_jacoco_threshold(self):
         path = self.file("coverage.xml", '<report><counter type="LINE" covered="70" missed="30"/><counter type="BRANCH" covered="6" missed="4"/></report>')
@@ -174,6 +209,11 @@ class EvidenceTests(TempCase):
     def test_jacoco_no_branches_is_na(self):
         path = self.file("coverage.xml", '<report><counter type="LINE" covered="3" missed="0"/></report>')
         self.assertIsNone(jacoco_coverage(path, 70, 60)["branches"])
+
+    def test_jacoco_negative_counters_cannot_inflate_coverage(self):
+        path = self.file("coverage.xml", '<report><counter type="LINE" covered="10" missed="-1"/></report>')
+        with self.assertRaises(HarnessError):
+            jacoco_coverage(path, 70, 60)
 
     def test_missing_jacoco_fails(self):
         with self.assertRaises(HarnessError):
@@ -192,6 +232,14 @@ class EvidenceTests(TempCase):
         path = self.json("coverage.json", {"total": {"lines": {"total": 0, "covered": 0}}})
         with self.assertRaises(HarnessError):
             frontend_coverage(path, 0, 0)
+
+    def test_frontend_noninteger_and_nonfinite_counters_fail(self):
+        for total, covered in ((float("inf"), float("inf")), (True, True), (1.5, 1)):
+            with self.subTest(total=total, covered=covered):
+                path = self.json("coverage.json", {"total": {"lines": {"total": total, "covered": covered},
+                                                          "branches": {"total": 0, "covered": 0}}})
+                with self.assertRaises(HarnessError):
+                    frontend_coverage(path, 70, 60)
 
     def semgrep(self, results=None, errors=None, scanned=None):
         return self.json("semgrep.json", {"results": results or [], "errors": errors or [], "paths": {"scanned": ["src/A.java"] if scanned is None else scanned}})
@@ -248,7 +296,8 @@ class RunnerTests(TempCase):
     def setUp(self):
         super().setUp()
         (self.root / "policy").mkdir()
-        self.json("images.lock.json", {"images": {"node": {"digest": "node@sha256:" + "a" * 64}}})
+        self.json("images.lock.json", {"images": {"node": {"digest": "node@sha256:" + "a" * 64,
+                                                      "os": "linux", "architecture": "arm64"}}})
         self.r = Runner(self.root, {}, "test", "frontend")
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
@@ -306,6 +355,23 @@ class RunnerTests(TempCase):
         self.assertTrue(any("dst=/policy,readonly" in arg for arg in command))
         self.assertFalse(any("docker.sock" in arg for arg in command))
         self.assertIn("--read-only", command)
+        self.assertEqual(command[command.index("--platform") + 1], "linux/arm64")
+        self.assertEqual(popen.call_args.kwargs["env"]["TZ"], "UTC")
+        self.assertEqual(popen.call_args.kwargs["env"]["PYTHONHASHSEED"], "0")
+        self.assertEqual(self.r.meta["execution"]["containers"][0]["platform"], "linux/arm64")
+
+    @patch("core.subprocess.Popen")
+    def test_job_cannot_override_central_environment(self, popen):
+        with self.assertRaises(HarnessError):
+            self.r.docker("node", "node", [], env={"TZ": "Europe/Berlin"})
+        popen.assert_not_called()
+
+    @patch("core.subprocess.Popen")
+    def test_missing_locked_platform_is_blocked_before_execution(self, popen):
+        del self.r.lock["images"]["node"]["architecture"]
+        with self.assertRaises(HarnessError):
+            self.r.docker("node", "node", [])
+        popen.assert_not_called()
 
     @patch("core.subprocess.Popen")
     def test_docker_accepts_separate_stage_memory_limit(self, popen):

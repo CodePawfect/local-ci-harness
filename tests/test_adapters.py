@@ -56,6 +56,82 @@ class AdapterTests(unittest.TestCase):
         write_json(path, [])
         self.assertEqual(main.redact_and_check_gitleaks(path)["findings"], 0)
 
+    def test_gitleaks_history_requires_positive_scan_proof_and_strips_ansi(self):
+        report = self.root / "history.json"
+        log = self.root / "history.log"
+        write_json(report, [])
+        log.write_text("\x1b[32mINFO\x1b[0m 3 commits scanned.\nno leaks found\n")
+
+        evidence = main.redact_and_check_gitleaks(report, history_log=log)
+
+        self.assertEqual(evidence, {"findings": 0, "scanned_commits": 3})
+        self.assertNotIn("\x1b", log.read_text())
+
+    def test_gitleaks_history_fails_closed_for_errors_zero_or_missing_proof(self):
+        report = self.root / "history.json"
+        log = self.root / "history.log"
+        write_json(report, [])
+        for contents in (
+            "ERR git: dubious ownership\n0 commits scanned.\nno leaks found\n",
+            "ERRO[0001] git: dubious ownership\n1 commit scanned.\nno leaks found\n",
+            "0 commits scanned.\nno leaks found\n",
+            "no leaks found\n",
+        ):
+            with self.subTest(contents=contents):
+                log.write_text(contents)
+                with self.assertRaises(HarnessError):
+                    main.redact_and_check_gitleaks(report, history_log=log)
+
+        log.unlink()
+        with self.assertRaises(HarnessError):
+            main.redact_and_check_gitleaks(report, history_log=log)
+        log.write_text("2 commits scanned.\nno leaks found\n")
+        with self.assertRaises(HarnessError):
+            main.redact_and_check_gitleaks(report, history_log=log, scan_succeeded=False)
+
+    def test_full_secret_scan_uses_narrow_safe_directory_only_for_git_history(self):
+        class FakeRunner:
+            def __init__(self, reports):
+                self.reports = reports
+                self.calls = []
+                self.checks = []
+
+            def blocked(self, name, reason):
+                raise AssertionError(f"unexpected block: {name}: {reason}")
+
+            def docker(self, name, image, args, snap, **kwargs):
+                self.calls.append((name, image, args, snap, kwargs))
+                (self.reports / f"{name}.json").write_text("[]")
+                if name.endswith("-git"):
+                    (self.reports / f"{name}.log").write_text("1 commit scanned.\nno leaks found\n")
+                return True
+
+            def check(self, name, fn):
+                self.checks.append((name, fn()))
+                return True
+
+        runner = FakeRunner(self.root)
+        with patch("main.git", return_value="false"):
+            main.secret_scans(runner, "frontend", self.snap, full=True)
+
+        self.assertEqual([call[0] for call in runner.calls], ["frontend-secrets-dir", "frontend-secrets-git"])
+        dir_kwargs = runner.calls[0][4]
+        git_call = runner.calls[1]
+        git_kwargs = git_call[4]
+        self.assertEqual(git_call[2][0], "git")
+        self.assertIn("--log-opts=--all", git_call[2])
+        self.assertIs(git_call[3], self.snap)
+        self.assertTrue(dir_kwargs["readonly_source"])
+        self.assertNotIn("env", dir_kwargs)
+        self.assertTrue(git_kwargs["readonly_source"])
+        self.assertEqual(git_kwargs["env"], {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": "/workspace",
+        })
+        self.assertNotIn("*", git_kwargs["env"].values())
+        self.assertEqual(runner.checks[-1], ("frontend-secrets-git-evidence", {"findings": 0, "scanned_commits": 1}))
+
     def test_production_zap_target_refused(self):
         with self.assertRaises(HarnessError):
             main.validate_zap_url("https://example.com/")
